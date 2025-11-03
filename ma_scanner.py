@@ -299,8 +299,8 @@ Volume Spike: {yahoo_data.get('volume_spike', 1):.1f}x normal
 1-Month Change: {yahoo_data.get('month_change_pct', 0):+.2f}%
 52-Week Range: ${yahoo_data.get('fifty_two_week_low', 'N/A')} - ${yahoo_data.get('fifty_two_week_high', 'N/A')}
 P/E Ratio: {yahoo_data.get('pe_ratio', 'N/A')}
-Shares Outstanding: {yahoo_data.get('shares_outstanding', 'N/A'):,} if yahoo_data.get('shares_outstanding') else 'N/A'}
-Float: {yahoo_data.get('float_shares', 'N/A'):,} if yahoo_data.get('float_shares') else 'N/A'}
+Shares Outstanding: {f"{yahoo_data.get('shares_outstanding'):,}" if yahoo_data.get('shares_outstanding') else 'N/A'}
+Float: {f"{yahoo_data.get('float_shares'):,}" if yahoo_data.get('float_shares') else 'N/A'}
 Short Interest: {yahoo_data.get('short_percent', 'N/A')}
 Institutional Ownership: {yahoo_data.get('institutional_ownership', 'N/A')}
 Analyst Target: ${yahoo_data.get('analyst_target', 'N/A')}
