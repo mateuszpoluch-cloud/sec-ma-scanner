@@ -1,0 +1,55 @@
+name: SEC M&A Scanner - Item 1.01
+
+on:
+  schedule:
+    # Market hours (9 AM - 8 PM EST = 14:00-01:00 UTC) - every 15 minutes
+    - cron: '*/15 14-23 * * 1-5'
+    - cron: '0 0-1 * * 2-6'
+    
+    # After hours - every hour
+    - cron: '0 2-13 * * 1-5'
+    
+    # Weekends - every 4 hours
+    - cron: '0 */4 * * 0,6'
+  
+  # Manual trigger
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests yfinance
+    
+    - name: Run M&A Scanner
+      env:
+        DISCORD_WEBHOOK_MEGA: ${{ secrets.DISCORD_WEBHOOK_MEGA }}
+        DISCORD_WEBHOOK_MAJOR: ${{ secrets.DISCORD_WEBHOOK_MAJOR }}
+        DISCORD_WEBHOOK_STANDARD: ${{ secrets.DISCORD_WEBHOOK_STANDARD }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        GIST_ID_MA: ${{ secrets.GIST_ID_MA }}
+      run: |
+        python ma_scanner.py
+    
+    - name: Upload logs (optional)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: scanner-logs
+        path: |
+          *.log
+        retention-days: 7
