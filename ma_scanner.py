@@ -231,19 +231,50 @@ def fetch_recent_8k() -> List[Dict]:
 def extract_accession_from_link(link: str) -> Optional[str]:
     """Extract accession number from SEC link"""
     try:
-        # Link format: https://www.sec.gov/cgi-bin/viewer?action=view&cik=XXX&accession_number=XXX
+        # Format 1: Viewer link with accession_number parameter
+        # https://www.sec.gov/cgi-bin/viewer?action=view&cik=XXX&accession_number=XXX
         if 'accession_number=' in link:
             return link.split('accession_number=')[1].split('&')[0]
+        
+        # Format 2: Direct archive link (RSS format)
+        # https://www.sec.gov/Archives/edgar/data/874501/000162828025047943/0001628280-25-047943-index.htm
+        if '/Archives/edgar/data/' in link:
+            # Extract from path: /data/{CIK}/{ACCESSION}/{ACCESSION}-index.htm
+            parts = link.split('/')
+            for part in parts:
+                # Accession format: XXXXXXXXXX-XX-XXXXXX (10-2-6 digits with dashes)
+                if len(part) >= 18 and part.count('-') >= 2:
+                    # Remove -index.htm suffix if present
+                    accession = part.replace('-index.htm', '').replace('-index.html', '')
+                    # Validate it looks like accession (has dashes in right places)
+                    if accession.count('-') == 2:
+                        return accession
+        
         return None
     except:
         return None
 
-def fetch_document_content(accession: str) -> str:
+def fetch_document_content(accession: str, link: str = "") -> str:
     """Fetch full 8-K document content"""
     try:
+        # Extract CIK from link if provided (RSS format)
+        cik = None
+        if link and '/data/' in link:
+            # Extract CIK from: /Archives/edgar/data/874501/000162828025047943/...
+            parts = link.split('/data/')
+            if len(parts) > 1:
+                cik = parts[1].split('/')[0]
+        
         # Build document URL
         acc_no_dashes = accession.replace('-', '')
-        url = f"https://www.sec.gov/Archives/edgar/data/{acc_no_dashes[:10]}/{acc_no_dashes}/{accession}.txt"
+        
+        if cik:
+            # Use CIK from link
+            url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_no_dashes}/{accession}.txt"
+        else:
+            # Fallback: try to extract CIK from accession (first 10 digits without dashes)
+            # This might not always work but better than nothing
+            url = f"https://www.sec.gov/Archives/edgar/data/{acc_no_dashes[:10]}/{acc_no_dashes}/{accession}.txt"
         
         headers = {'User-Agent': USER_AGENT}
         response = requests.get(url, headers=headers, timeout=15)
@@ -251,7 +282,7 @@ def fetch_document_content(accession: str) -> str:
         
         return response.text
     except Exception as e:
-        print(f"Error fetching document {accession}: {e}")
+        print(f"   ✗ Error fetching document {accession}: {e}")
         return ""
 
 def has_item_101(content: str) -> bool:
@@ -697,8 +728,8 @@ def scan_ma_deals():
         
         print(f"\n🔍 Analyzing: {filing.get('title', 'Unknown')[:60]}...")
         
-        # Fetch document
-        content = fetch_document_content(accession)
+        # Fetch document (pass link to extract CIK)
+        content = fetch_document_content(accession, filing.get('link', ''))
         
         if not content:
             processed.add(filing_id)
