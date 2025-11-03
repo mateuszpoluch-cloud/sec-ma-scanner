@@ -103,21 +103,60 @@ def extract_ticker_from_document(content: str) -> Optional[str]:
     """Try to extract ticker from 8-K document"""
     try:
         lines = content.split('\n')
-        for line in lines[:100]:
-            # Look for trading symbol in header
-            if 'TRADING SYMBOL' in line.upper() or 'TICKER SYMBOL' in line.upper():
+        
+        # Search in first 200 lines (more coverage)
+        for line in lines[:200]:
+            line_upper = line.upper()
+            
+            # Pattern 1: TRADING SYMBOL
+            if 'TRADING SYMBOL' in line_upper or 'TICKER SYMBOL' in line_upper:
                 parts = line.split(':')
                 if len(parts) > 1:
                     ticker = parts[1].strip().split()[0]
-                    return ticker.upper()
-            # Look for common patterns
-            if 'NASDAQ:' in line.upper() or 'NYSE:' in line.upper():
+                    # Clean ticker
+                    ticker = ticker.replace(',', '').replace('.', '').replace('(', '').replace(')', '')
+                    if ticker and len(ticker) <= 5:
+                        return ticker.upper()
+            
+            # Pattern 2: NASDAQ: or NYSE:
+            if 'NASDAQ:' in line_upper or 'NYSE:' in line_upper:
                 parts = line.split(':')
                 if len(parts) > 1:
                     ticker = parts[1].strip().split()[0]
-                    return ticker.upper()
+                    ticker = ticker.replace(',', '').replace('.', '').replace('(', '').replace(')', '')
+                    if ticker and len(ticker) <= 5:
+                        return ticker.upper()
+            
+            # Pattern 3: (NASDAQ: XXXX) or (NYSE: XXXX)
+            if '(NASDAQ:' in line_upper or '(NYSE:' in line_upper or '(NYSE:' in line_upper:
+                start = line_upper.find('(NASDAQ:') if '(NASDAQ:' in line_upper else line_upper.find('(NYSE:') if '(NYSE:' in line_upper else line_upper.find('(NYSE:')
+                if start >= 0:
+                    segment = line[start:start+20]
+                    ticker = segment.split(':')[1].split(')')[0].strip()
+                    ticker = ticker.replace(',', '').replace('.', '')
+                    if ticker and len(ticker) <= 5:
+                        return ticker.upper()
+            
+            # Pattern 4: Common name: <COMPANY NAME> (<TICKER>)
+            if 'COMPANY' in line_upper and '(' in line and ')' in line:
+                # Look for pattern: COMPANY NAME (XXXX)
+                parts = line.split('(')
+                if len(parts) > 1:
+                    potential_ticker = parts[-1].split(')')[0].strip()
+                    # Check if it looks like a ticker (2-5 uppercase letters)
+                    if potential_ticker and 2 <= len(potential_ticker) <= 5 and potential_ticker.replace('.', '').isalpha():
+                        return potential_ticker.upper()
+        
+        # If nothing found, try CIK-based lookup from header
+        # Look for CONFORMED SUBMISSION TYPE and get company CIK
+        for line in lines[:50]:
+            if 'CENTRAL INDEX KEY' in line.upper():
+                # We have CIK but not ticker - Yahoo Finance search by company name might work
+                pass
+        
         return None
-    except:
+    except Exception as e:
+        print(f"   ⚠️  Ticker extraction error: {str(e)[:30]}")
         return None
 
 def get_yahoo_finance_data(ticker: Optional[str], company_name: str) -> Dict:
@@ -126,6 +165,50 @@ def get_yahoo_finance_data(ticker: Optional[str], company_name: str) -> Dict:
     if not YFINANCE_AVAILABLE:
         print("   → Yahoo Finance not available (install: pip install yfinance)")
         return {}
+    
+    # If no ticker, try to find it using company name
+    if not ticker and company_name and company_name != "Unknown Company":
+        print(f"   → No ticker in document, searching by company name...")
+        try:
+            # Try to search for ticker using yfinance
+            # Remove common suffixes
+            search_name = company_name.replace(' INC', '').replace(' CORP', '').replace(' LTD', '').replace(' CO', '').replace(',', '').strip()
+            
+            # yfinance doesn't have direct search, but we can try common patterns
+            # Try exact company name as ticker (sometimes works)
+            test_tickers = []
+            
+            # Try company initials
+            words = search_name.split()
+            if len(words) >= 2:
+                initials = ''.join([w[0] for w in words if w])
+                if 2 <= len(initials) <= 5:
+                    test_tickers.append(initials)
+            
+            # Try first word (sometimes company name is the ticker)
+            if len(words) > 0 and 2 <= len(words[0]) <= 5:
+                test_tickers.append(words[0])
+            
+            # Try to fetch info for each potential ticker
+            for test_ticker in test_tickers:
+                try:
+                    stock = yf.Ticker(test_ticker.upper())
+                    info = stock.info
+                    # Check if this ticker actually has data
+                    if info.get('regularMarketPrice') or info.get('currentPrice'):
+                        ticker = test_ticker.upper()
+                        print(f"   ✓ Found ticker by search: {ticker}")
+                        break
+                except:
+                    continue
+            
+            if not ticker:
+                print(f"   ✗ Could not find ticker for {company_name}")
+                return {}
+                
+        except Exception as e:
+            print(f"   ✗ Ticker search failed: {str(e)[:50]}")
+            return {}
     
     if not ticker:
         print(f"   → No ticker found for {company_name}")
@@ -438,41 +521,63 @@ WAŻNE:
 - Bądź conservative z impact scores - 10/10 tylko dla wyjątkowych dealów!
 - Zwróć TYLKO JSON, bez dodatkowego tekstu."""
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Try gemini-1.5-flash first, fallback to gemini-pro if needed
+        models_to_try = [
+            "gemini-1.5-flash",
+            "gemini-pro"
+        ]
         
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 1024
-            }
-        }
+        last_error = None
+        for model_name in models_to_try:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+                
+                payload = {
+                    "contents": [{
+                        "parts": [{"text": prompt}]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.3,
+                        "maxOutputTokens": 1024
+                    }
+                }
+                
+                response = requests.post(url, json=payload, timeout=45)
+                response.raise_for_status()
+                
+                result = response.json()
+                
+                if 'candidates' in result and len(result['candidates']) > 0:
+                    text = result['candidates'][0]['content']['parts'][0]['text']
+                    
+                    # Extract JSON from response
+                    text = text.strip()
+                    if '```json' in text:
+                        text = text.split('```json')[1].split('```')[0]
+                    elif '```' in text:
+                        text = text.split('```')[1].split('```')[0]
+                    
+                    analysis = json.loads(text.strip())
+                    print(f"✓ Gemini analysis ({model_name}): Impact {analysis.get('impact_score', 0)}/10 (Premium: {analysis.get('premium_pct', 'N/A')}%)")
+                    return analysis
+                
+            except requests.exceptions.HTTPError as e:
+                last_error = f"{model_name}: {e}"
+                print(f"   ⚠️  {model_name} failed: {e.response.status_code}")
+                if model_name == models_to_try[-1]:
+                    # Last model also failed
+                    print(f"   ✗ All Gemini models failed!")
+                continue
+            except Exception as e:
+                last_error = f"{model_name}: {e}"
+                print(f"   ⚠️  {model_name} error: {str(e)[:50]}")
+                continue
         
-        response = requests.post(url, json=payload, timeout=45)
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        if 'candidates' in result and len(result['candidates']) > 0:
-            text = result['candidates'][0]['content']['parts'][0]['text']
-            
-            # Extract JSON from response
-            text = text.strip()
-            if '```json' in text:
-                text = text.split('```json')[1].split('```')[0]
-            elif '```' in text:
-                text = text.split('```')[1].split('```')[0]
-            
-            analysis = json.loads(text.strip())
-            print(f"✓ Gemini analysis: Impact {analysis.get('impact_score', 0)}/10 (Premium: {analysis.get('premium_pct', 'N/A')}%)")
-            return analysis
-        
+        print(f"   ✗ All Gemini models failed. Last error: {last_error}")
         return None
-        
+    
     except Exception as e:
-        print(f"Error with Gemini: {e}")
+        print(f"✗ Unexpected error in Gemini analysis: {str(e)[:100]}")
         return None
 
 # ============================================
