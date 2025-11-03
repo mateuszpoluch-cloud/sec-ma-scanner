@@ -42,7 +42,7 @@ def fetch_and_analyze_rss():
         
         item_101_count = 0
         
-        for i, entry in enumerate(entries[:20], 1):  # Show first 20
+        for i, entry in enumerate(entries[:50], 1):  # Show first 50 (increased from 20)
             title = entry.find('atom:title', namespace)
             updated = entry.find('atom:updated', namespace)
             link = entry.find('atom:link', namespace)
@@ -56,36 +56,70 @@ def fetch_and_analyze_rss():
             print(f"   Link: {link_href[:80]}...")
             
             # Try to fetch document and check for Item 1.01
-            if '8-K' in title_text and 'accession_number=' in link_href:
-                accession = link_href.split('accession_number=')[1].split('&')[0]
+            if '8-K' in title_text:
+                # Extract accession number (support both formats)
+                accession = None
+                
+                # Format 1: accession_number parameter
+                if 'accession_number=' in link_href:
+                    accession = link_href.split('accession_number=')[1].split('&')[0]
+                
+                # Format 2: RSS/Archive format
+                elif '/Archives/edgar/data/' in link_href:
+                    parts = link_href.split('/')
+                    for part in parts:
+                        if len(part) >= 18 and part.count('-') >= 2:
+                            accession = part.replace('-index.htm', '').replace('-index.html', '')
+                            if accession.count('-') == 2:
+                                break
+                
+                if not accession:
+                    print(f"   ⚠️  Could not extract accession number")
+                    print()
+                    continue
                 
                 # Try to fetch document
                 try:
-                    acc_no_dashes = accession.replace('-', '')
                     # Extract CIK from link
+                    cik = None
+                    
+                    # Method 1: From cik= parameter
                     if 'cik=' in link_href:
                         cik = link_href.split('cik=')[1].split('&')[0].lstrip('0') or '0'
-                        doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_no_dashes}/{accession}.txt"
+                    
+                    # Method 2: From /data/{CIK}/ path
+                    elif '/data/' in link_href:
+                        parts = link_href.split('/data/')
+                        if len(parts) > 1:
+                            cik = parts[1].split('/')[0]
+                    
+                    if not cik:
+                        print(f"   ⚠️  Could not extract CIK")
+                        print()
+                        continue
+                    
+                    acc_no_dashes = accession.replace('-', '')
+                    doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_no_dashes}/{accession}.txt"
+                    
+                    doc_response = requests.get(doc_url, headers=headers, timeout=10)
+                    if doc_response.status_code == 200:
+                        content = doc_response.text.lower()
                         
-                        doc_response = requests.get(doc_url, headers=headers, timeout=10)
-                        if doc_response.status_code == 200:
-                            content = doc_response.text.lower()
+                        if 'item 1.01' in content or 'item 1.1' in content:
+                            print(f"   🔴 FOUND ITEM 1.01! (M&A Deal!)")
+                            item_101_count += 1
                             
-                            if 'item 1.01' in content or 'item 1.1' in content:
-                                print(f"   🔴 FOUND ITEM 1.01! (M&A Deal!)")
-                                item_101_count += 1
-                                
-                                # Try to extract company name
-                                lines = doc_response.text.split('\n')
-                                for line in lines[:50]:
-                                    if 'COMPANY CONFORMED NAME' in line.upper():
-                                        company = line.split(':')[-1].strip()
-                                        print(f"   Company: {company}")
-                                        break
-                            else:
-                                print(f"   ✓ Fetched document - No Item 1.01")
+                            # Try to extract company name
+                            lines = doc_response.text.split('\n')
+                            for line in lines[:50]:
+                                if 'COMPANY CONFORMED NAME' in line.upper():
+                                    company = line.split(':')[-1].strip()
+                                    print(f"   Company: {company}")
+                                    break
                         else:
-                            print(f"   ⚠️  Document fetch failed: {doc_response.status_code}")
+                            print(f"   ✓ Fetched document - No Item 1.01")
+                    else:
+                        print(f"   ⚠️  Document fetch failed: {doc_response.status_code}")
                 except Exception as e:
                     print(f"   ⚠️  Error checking document: {str(e)[:50]}")
             
@@ -95,7 +129,7 @@ def fetch_and_analyze_rss():
         print("SUMMARY:")
         print("="*70)
         print(f"Total 8-K filings in RSS: {len(entries)}")
-        print(f"Analyzed in detail: {min(20, len(entries))}")
+        print(f"Analyzed in detail: {min(50, len(entries))}")
         print(f"🔴 ITEM 1.01 M&A FOUND: {item_101_count}")
         print()
         
