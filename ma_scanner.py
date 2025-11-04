@@ -2,7 +2,7 @@
 """
 SEC M&A Scanner - Item 1.01
 Skanuje wszystkie 8-K z Item 1.01 (M&A, partnerships, major contracts)
-AI-driven impact scoring z Gemini
+AI-driven impact scoring z Groq
 """
 
 import requests
@@ -28,7 +28,7 @@ except ImportError:
 DISCORD_WEBHOOK_MEGA = os.environ.get('DISCORD_WEBHOOK_MEGA', '')
 DISCORD_WEBHOOK_MAJOR = os.environ.get('DISCORD_WEBHOOK_MAJOR', '')
 DISCORD_WEBHOOK_STANDARD = os.environ.get('DISCORD_WEBHOOK_STANDARD', '')
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')  # Groq instead of Gemini
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 GIST_TOKEN = os.environ.get('GIST_TOKEN', '')
 GIST_ID = os.environ.get('GIST_ID_MA', '')
 
@@ -146,13 +146,6 @@ def extract_ticker_from_document(content: str) -> Optional[str]:
                     # Check if it looks like a ticker (2-5 uppercase letters)
                     if potential_ticker and 2 <= len(potential_ticker) <= 5 and potential_ticker.replace('.', '').isalpha():
                         return potential_ticker.upper()
-        
-        # If nothing found, try CIK-based lookup from header
-        # Look for CONFORMED SUBMISSION TYPE and get company CIK
-        for line in lines[:50]:
-            if 'CENTRAL INDEX KEY' in line.upper():
-                # We have CIK but not ticker - Yahoo Finance search by company name might work
-                pass
         
         return None
     except Exception as e:
@@ -440,7 +433,7 @@ def extract_company_info(content: str) -> Dict:
         return {'company': 'Unknown Company'}
 
 # ============================================
-# GROQ AI ANALYSIS (OPTIMIZED)
+# GROQ AI ANALYSIS (OPTIMIZED) - UPDATED MODEL
 # ============================================
 
 def extract_relevant_sections(document: str, max_chars: int = 8000) -> str:
@@ -480,7 +473,7 @@ def extract_relevant_sections(document: str, max_chars: int = 8000) -> str:
         return document[:max_chars]
 
 def analyze_with_groq(document: str, company_info: Dict, yahoo_data: Dict) -> Optional[Dict]:
-    """Analyze M&A deal with Groq AI (Llama 3.1) + Yahoo Finance data - OPTIMIZED"""
+    """Analyze M&A deal with Groq AI (Llama 3.3 70B) + Yahoo Finance data - OPTIMIZED"""
     if not GROQ_API_KEY:
         print("Warning: No GROQ_API_KEY set")
         return None
@@ -554,7 +547,7 @@ RESPOND IN JSON:
 
 IMPORTANT: Use EXACT numbers from document. Be conservative with scores. Return ONLY JSON."""
 
-        # Groq API call
+        # Groq API call with UPDATED MODEL
         url = "https://api.groq.com/openai/v1/chat/completions"
         
         headers = {
@@ -563,7 +556,7 @@ IMPORTANT: Use EXACT numbers from document. Be conservative with scores. Return 
         }
         
         payload = {
-            "model": "llama-3.1-70b-versatile",
+            "model": "llama-3.3-70b-versatile",  # ✅ UPDATED MODEL
             "messages": [
                 {
                     "role": "system",
@@ -784,7 +777,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"⏰ {poland_time} | 🤖 M&A Scanner v1.1 | Powered by Groq AI"
+            "text": f"⏰ {poland_time} | 🤖 M&A Scanner v1.2 | Powered by Groq AI (Llama 3.3)"
         }
     }
     
