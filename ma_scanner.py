@@ -96,6 +96,44 @@ def save_processed_to_gist(processed: set):
         print(f"Error saving to Gist: {e}")
 
 # ============================================
+# SEC TICKER LOOKUP
+# ============================================
+
+def get_ticker_from_sec_api(cik: str) -> Optional[str]:
+    """Fetch ticker from SEC Company Tickers API using CIK"""
+    try:
+        # Remove leading zeros from CIK for comparison
+        cik_clean = str(int(cik)) if cik else None
+        if not cik_clean:
+            return None
+        
+        print(f"   → Searching SEC API for CIK {cik_clean}...")
+        
+        # SEC Company Tickers JSON endpoint
+        url = "https://www.sec.gov/files/company_tickers.json"
+        headers = {'User-Agent': USER_AGENT}
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        companies = response.json()
+        
+        # Search for matching CIK
+        for key, company in companies.items():
+            if str(company.get('cik_str')) == cik_clean:
+                ticker = company.get('ticker')
+                if ticker:
+                    print(f"   ✓ Found ticker via SEC API: {ticker}")
+                    return ticker.upper()
+        
+        print(f"   ✗ No ticker found in SEC API for CIK {cik_clean}")
+        return None
+        
+    except Exception as e:
+        print(f"   ✗ SEC API lookup error: {str(e)[:50]}")
+        return None
+
+# ============================================
 # YAHOO FINANCE INTEGRATION
 # ============================================
 
@@ -868,13 +906,18 @@ def scan_ma_deals():
         # Extract ticker from document
         ticker = extract_ticker_from_document(content)
         
+        # Fallback: Try SEC API if ticker not found in document
+        if not ticker and cik:
+            ticker = get_ticker_from_sec_api(cik)
+            time.sleep(0.5)  # Rate limiting for SEC API
+        
         # Fetch Yahoo Finance data
         yahoo_data = {}
         if ticker:
             yahoo_data = get_yahoo_finance_data(ticker, filing['company'])
             time.sleep(1)  # Rate limiting for Yahoo Finance
         else:
-            print("   ↳ No ticker found - skipping Yahoo Finance")
+            print("   ↳ No ticker found in document or SEC API - skipping Yahoo Finance")
         
         # AI Analysis with Groq + Yahoo Finance data
         analysis = analyze_with_groq(content, company_info, yahoo_data)
