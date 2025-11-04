@@ -39,7 +39,7 @@ jobs:
         DISCORD_WEBHOOK_MEGA: ${{ secrets.DISCORD_WEBHOOK_MEGA }}
         DISCORD_WEBHOOK_MAJOR: ${{ secrets.DISCORD_WEBHOOK_MAJOR }}
         DISCORD_WEBHOOK_STANDARD: ${{ secrets.DISCORD_WEBHOOK_STANDARD }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
         GIST_ID_MA: ${{ secrets.GIST_ID_MA }}
       run: |
