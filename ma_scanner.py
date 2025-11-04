@@ -28,7 +28,7 @@ except ImportError:
 DISCORD_WEBHOOK_MEGA = os.environ.get('DISCORD_WEBHOOK_MEGA', '')
 DISCORD_WEBHOOK_MAJOR = os.environ.get('DISCORD_WEBHOOK_MAJOR', '')
 DISCORD_WEBHOOK_STANDARD = os.environ.get('DISCORD_WEBHOOK_STANDARD', '')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')  # Groq instead of Gemini
 GIST_TOKEN = os.environ.get('GIST_TOKEN', '')
 GIST_ID = os.environ.get('GIST_ID_MA', '')
 
@@ -392,10 +392,10 @@ def extract_company_info(content: str) -> Dict:
 # GEMINI AI ANALYSIS
 # ============================================
 
-def analyze_with_gemini(document: str, company_info: Dict, yahoo_data: Dict) -> Optional[Dict]:
-    """Analyze M&A deal with Gemini AI + Yahoo Finance data"""
-    if not GEMINI_API_KEY:
-        print("Warning: No GEMINI_API_KEY set")
+def analyze_with_groq(document: str, company_info: Dict, yahoo_data: Dict) -> Optional[Dict]:
+    """Analyze M&A deal with Groq AI (Llama 3.1) + Yahoo Finance data"""
+    if not GROQ_API_KEY:
+        print("Warning: No GROQ_API_KEY set")
         return None
     
     try:
@@ -521,59 +521,49 @@ WAŻNE:
 - Bądź conservative z impact scores - 10/10 tylko dla wyjątkowych dealów!
 - Zwróć TYLKO JSON, bez dodatkowego tekstu."""
 
-        # Try gemini-1.5-flash first, fallback to gemini-pro if needed
-        models_to_try = [
-            "gemini-1.5-flash",
-            "gemini-pro"
-        ]
+        # Groq API with Llama 3.1 70B
+        url = "https://api.groq.com/openai/v1/chat/completions"
         
-        last_error = None
-        for model_name in models_to_try:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-                
-                payload = {
-                    "contents": [{
-                        "parts": [{"text": prompt}]
-                    }],
-                    "generationConfig": {
-                        "temperature": 0.3,
-                        "maxOutputTokens": 1024
-                    }
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "llama-3.1-70b-versatile",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert M&A analyst. Respond ONLY with valid JSON, no additional text."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
                 }
-                
-                response = requests.post(url, json=payload, timeout=45)
-                response.raise_for_status()
-                
-                result = response.json()
-                
-                if 'candidates' in result and len(result['candidates']) > 0:
-                    text = result['candidates'][0]['content']['parts'][0]['text']
-                    
-                    # Extract JSON from response
-                    text = text.strip()
-                    if '```json' in text:
-                        text = text.split('```json')[1].split('```')[0]
-                    elif '```' in text:
-                        text = text.split('```')[1].split('```')[0]
-                    
-                    analysis = json.loads(text.strip())
-                    print(f"✓ Gemini analysis ({model_name}): Impact {analysis.get('impact_score', 0)}/10 (Premium: {analysis.get('premium_pct', 'N/A')}%)")
-                    return analysis
-                
-            except requests.exceptions.HTTPError as e:
-                last_error = f"{model_name}: {e}"
-                print(f"   ⚠️  {model_name} failed: {e.response.status_code}")
-                if model_name == models_to_try[-1]:
-                    # Last model also failed
-                    print(f"   ✗ All Gemini models failed!")
-                continue
-            except Exception as e:
-                last_error = f"{model_name}: {e}"
-                print(f"   ⚠️  {model_name} error: {str(e)[:50]}")
-                continue
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1024
+        }
         
-        print(f"   ✗ All Gemini models failed. Last error: {last_error}")
+        response = requests.post(url, headers=headers, json=payload, timeout=45)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if 'choices' in result and len(result['choices']) > 0:
+            text = result['choices'][0]['message']['content']
+            
+            # Extract JSON from response
+            text = text.strip()
+            if '```json' in text:
+                text = text.split('```json')[1].split('```')[0]
+            elif '```' in text:
+                text = text.split('```')[1].split('```')[0]
+            
+            analysis = json.loads(text.strip())
+            print(f"✓ Groq AI analysis (Llama 3.1): Impact {analysis.get('impact_score', 0)}/10 (Premium: {analysis.get('premium_pct', 'N/A')}%)")
+            return analysis
+        
         return None
     
     except Exception as e:
@@ -771,7 +761,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
         "color": color,
         "fields": fields,
         "footer": {
-            "text": f"⏰ {poland_time} | 🤖 M&A Scanner v1.0 + Yahoo Finance | Powered by Gemini"
+            "text": f"⏰ {poland_time} | 🤖 M&A Scanner v1.0 + Yahoo Finance | Powered by Groq AI"
         }
     }
     
@@ -863,11 +853,11 @@ def scan_ma_deals():
         else:
             print("   ↳ No ticker found - skipping Yahoo Finance")
         
-        # AI Analysis with Yahoo Finance data
-        analysis = analyze_with_gemini(content, company_info, yahoo_data)
+        # AI Analysis with Groq + Yahoo Finance data
+        analysis = analyze_with_groq(content, company_info, yahoo_data)
         
         if not analysis:
-            print("   ↳ Gemini analysis failed")
+            print("   ↳ Groq analysis failed")
             processed.add(filing_id)
             continue
         
