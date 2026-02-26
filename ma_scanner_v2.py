@@ -566,6 +566,15 @@ ANALYSIS RULES:
 3. DEAL VALUE: Use EXACT numbers from document. If regex found ${f"{deal_value_regex:,.0f}" if deal_value_regex else "N/A"} — confirm or explain discrepancy.
 4. If information is NOT in the document → write null. DO NOT invent numbers.
 5. SHORT SQUEEZE: If short_pct > 15% and deal_type = "acquisition" → note squeeze risk in reasoning.
+6. FILER ROLE: Determine if the company filing this 8-K is the TARGET (being acquired) or the ACQUIRER (doing the buying).
+   - filer_role = "target" if the filing company IS being acquired
+   - filer_role = "acquirer" if the filing company IS doing the acquisition
+   - filer_role = "unknown" if unclear from the document
+7. TICKER SYMBOLS (critical for trading):
+   - target_ticker: NYSE/NASDAQ ticker of the TARGET company — this stock will jump to offer price
+   - acquirer_ticker: NYSE/NASDAQ ticker of the ACQUIRER company
+   - Use only the raw symbol without exchange prefix (e.g. "BIOM" not "NASDAQ:BIOM")
+   - Set null if company is private, foreign, or ticker unknown
 
 IMPACT SCORE (1-10):
 9-10 MEGA:   Full acquisition, all-cash, premium >40%, or short squeeze setup
@@ -603,6 +612,9 @@ Respond ONLY with valid JSON:
   "risks": ["<risk1>", "<risk2>"],
   "sympathy_plays": ["<TICK: reason>"],
   "leak_detected": <true if unusual pre-filing volume/price action>,
+  "filer_role": "target|acquirer|unknown",
+  "target_ticker": "<ticker or null>",
+  "acquirer_ticker": "<ticker or null>",
   "reasoning": "<full justification>"
 }}"""
 
@@ -654,7 +666,7 @@ def _poland_time(utc_str: str) -> str:
         return utc_str
 
 
-def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority: str):
+def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquirer_yahoo: Dict, priority: str):
     color_map = {
         "MEGA":     (15158332, "🔴🔴🔴"),
         "MAJOR":    (16753920, "🟠"),
@@ -666,17 +678,25 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
         logger.warning("Brak DISCORD_WEBHOOK_V2")
         return
 
-    target   = analysis.get('target_company') or filing.get('company', 'Unknown')
-    acquirer = analysis.get('acquirer', 'Unknown')
-    ticker   = yahoo_data.get('ticker', '')
+    target_name  = analysis.get('target_company') or filing.get('company', 'Unknown')
+    acquirer_name = analysis.get('acquirer', 'Unknown')
+    target_ticker  = target_yahoo.get('ticker', '')
+    acquirer_ticker = acquirer_yahoo.get('ticker', '')
 
-    title = f"{emoji} [v2] {priority} M&A — {ticker or target}"
+    # Tytuł i TradingView link → zawsze dla TARGETU (ten skacze)
+    display_ticker = target_ticker or analysis.get('target_ticker') or acquirer_ticker
+    title = f"{emoji} [v2] {priority} M&A — {display_ticker or target_name}"
+    tv_url = f"https://www.tradingview.com/symbols/{display_ticker}/" if display_ticker else None
 
-    tv_url = f"https://www.tradingview.com/symbols/{ticker}/" if ticker else None
-
-    desc = f"**{target}** → **{acquirer}**\n"
+    desc = f"🎯 **Cel:** {target_name}"
+    if target_ticker:
+        desc += f" `({target_ticker})`"
+    desc += f"\n🏢 **Nabywca:** {acquirer_name}"
+    if acquirer_ticker:
+        desc += f" `({acquirer_ticker})`"
+    desc += "\n"
     if tv_url:
-        desc += f"📊 **[{ticker} — wykres TradingView]({tv_url})**\n"
+        desc += f"📊 **[{display_ticker} — wykres TradingView]({tv_url})**\n"
     desc += "\n"
 
     if analysis.get('deal_value'):
@@ -691,8 +711,10 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
             desc += f" *(obliczenie: {analysis['premium_calculation'][:80]})*"
         desc += "\n"
 
-    if analysis.get('offer_price_per_share') and yahoo_data.get('current_price'):
-        desc += f"🎯 **Oferta:** ${analysis['offer_price_per_share']}/akcję vs ${yahoo_data['current_price']} aktualny kurs\n"
+    # Kurs targetu (ten skacze do ceny oferty)
+    target_price = target_yahoo.get('current_price')
+    if analysis.get('offer_price_per_share') and target_price:
+        desc += f"🎯 **Oferta:** ${analysis['offer_price_per_share']}/akcję vs ${target_price} aktualny kurs\n"
 
     if analysis.get('upside_to_offer'):
         desc += f"📈 **Potencjał do oferty:** {analysis['upside_to_offer']}\n"
@@ -700,7 +722,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
     squeeze = analysis.get('short_squeeze_risk', 'none')
     SQUEEZE_PL = {'high': 'WYSOKI', 'medium': 'ŚREDNI', 'low': 'NISKI', 'none': 'BRAK'}
     if squeeze in ('high', 'medium'):
-        short_pct = (yahoo_data.get('short_percent', 0) or 0) * 100
+        short_pct = (target_yahoo.get('short_percent', 0) or 0) * 100
         desc += f"⚡ **Ryzyko short squeeze:** {SQUEEZE_PL.get(squeeze, squeeze.upper())} ({short_pct:.1f}% krótkich pozycji)\n"
 
     desc += f"\n**OCENA AI: {analysis.get('impact_score', 0)}/10** | **Pewność: {analysis.get('confidence', 0)}/10**\n"
@@ -717,20 +739,37 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
 
     fields = []
 
-    if yahoo_data and not yahoo_data.get('error'):
+    # Dane targetu (cel przejęcia — ten skacze)
+    if target_yahoo and not target_yahoo.get('error'):
         yf_text = ""
-        if yahoo_data.get('market_cap_formatted'):
-            yf_text += f"**Wycena:** {yahoo_data['market_cap_formatted']}\n"
-        if yahoo_data.get('current_price'):
-            yf_text += f"**Kurs:** ${yahoo_data['current_price']}\n"
-        vs = yahoo_data.get('volume_spike', 1)
+        if target_yahoo.get('market_cap_formatted'):
+            yf_text += f"**Wycena:** {target_yahoo['market_cap_formatted']}\n"
+        if target_yahoo.get('current_price'):
+            yf_text += f"**Kurs:** ${target_yahoo['current_price']}\n"
+        vs = target_yahoo.get('volume_spike', 1)
         if vs > 1.5:
             yf_text += f"🔊 **Wolumen:** {vs:.1f}x śr.\n"
-        if yahoo_data.get('week_change_pct') is not None:
-            chg = yahoo_data['week_change_pct']
+        if target_yahoo.get('week_change_pct') is not None:
+            chg = target_yahoo['week_change_pct']
             yf_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%\n"
-        if fields or yf_text:
-            fields.append({"name": "📊 Dane rynkowe", "value": yf_text or "—", "inline": True})
+        if target_yahoo.get('short_percent'):
+            sp = target_yahoo['short_percent'] * 100
+            yf_text += f"🩳 **Short:** {sp:.1f}% flotu\n"
+        if yf_text:
+            fields.append({"name": "📊 Dane targetu (CEL)", "value": yf_text, "inline": True})
+
+    # Dane acquirera (nabywca — kontekst)
+    if acquirer_yahoo and not acquirer_yahoo.get('error') and acquirer_yahoo.get('current_price'):
+        acq_text = ""
+        if acquirer_yahoo.get('market_cap_formatted'):
+            acq_text += f"**Wycena:** {acquirer_yahoo['market_cap_formatted']}\n"
+        if acquirer_yahoo.get('current_price'):
+            acq_text += f"**Kurs:** ${acquirer_yahoo['current_price']}\n"
+        if acquirer_yahoo.get('week_change_pct') is not None:
+            chg = acquirer_yahoo['week_change_pct']
+            acq_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%\n"
+        if acq_text:
+            fields.append({"name": "🏢 Dane nabywcy", "value": acq_text, "inline": True})
 
     if analysis.get('strategic_rationale'):
         fields.append({"name": "🧠 Uzasadnienie strategiczne", "value": analysis['strategic_rationale'][:300], "inline": False})
@@ -870,17 +909,56 @@ def scan_ma_deals():
             processed.add(accession)
             continue
 
+        # --- Resolve target vs acquirer ---
+        # Groq mówi nam kto jest filer: target czy acquirer
+        # Chcemy zawsze mieć dane TARGETU (ten skacze) + ACQUIRERA (kontekst)
+        filer_role = analysis.get('filer_role', 'unknown')
+        target_yahoo  = {}
+        acquirer_yahoo = {}
+
+        if filer_role == 'acquirer':
+            # Filer to nabywca — mamy jego dane w yahoo_data
+            # Szukamy danych TARGETU (ten będzie skakał)
+            acquirer_yahoo = yahoo_data
+            tgt_ticker = analysis.get('target_ticker')
+            if tgt_ticker and tgt_ticker != ticker:
+                logger.info(f"   → Pobieram dane targetu: {tgt_ticker} (filer={ticker} to acquirer)")
+                tgt_data = get_yahoo_data(tgt_ticker)
+                time.sleep(0.3)
+                if tgt_data and not tgt_data.get('error') and tgt_data.get('market_cap'):
+                    target_yahoo = tgt_data
+                    logger.info(f"   ✓ Target {tgt_ticker}: ${tgt_data.get('current_price')} MCap:{tgt_data.get('market_cap_formatted')}")
+                else:
+                    logger.warning(f"   ⚠ Brak danych Yahoo dla targetu {tgt_ticker}")
+            else:
+                logger.info(f"   ⚠ Brak tickera targetu w analizie Groq (filer=acquirer)")
+
+        elif filer_role == 'target':
+            # Filer to cel przejęcia — yahoo_data już jest danymi targetu
+            target_yahoo = yahoo_data
+            acq_ticker = analysis.get('acquirer_ticker')
+            if acq_ticker and acq_ticker != ticker:
+                logger.info(f"   → Pobieram dane acquirera: {acq_ticker}")
+                acq_data = get_yahoo_data(acq_ticker)
+                time.sleep(0.3)
+                if acq_data and not acq_data.get('error'):
+                    acquirer_yahoo = acq_data
+
+        else:
+            # Nie wiadomo kto jest kim — traktujemy filer jako target
+            target_yahoo = yahoo_data
+
         # --- Routing na Discord ---
         impact = analysis.get('impact_score', 0)
 
         if impact >= 9:
-            send_discord_alert(filing, analysis, yahoo_data, "MEGA")
+            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, "MEGA")
             new_alerts += 1
         elif impact >= 7:
-            send_discord_alert(filing, analysis, yahoo_data, "MAJOR")
+            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, "MAJOR")
             new_alerts += 1
         elif impact >= 5:
-            send_discord_alert(filing, analysis, yahoo_data, "STANDARD")
+            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, "STANDARD")
             new_alerts += 1
         else:
             logger.info(f"   ↳ Low impact ({impact}/10) — pomijam alert")
