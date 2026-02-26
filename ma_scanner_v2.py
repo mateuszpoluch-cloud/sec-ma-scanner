@@ -562,6 +562,8 @@ IMPACT SCORE (1-10):
 DOCUMENT (Item 1.01 section):
 {section}
 
+LANGUAGE: Write strategic_rationale, all items in key_points, risks, sympathy_plays arrays, and reasoning in Polish (język polski). Keep all JSON keys and fixed enum values (verdict, deal_type, deal_structure, short_squeeze_risk) in English.
+
 Respond ONLY with valid JSON:
 {{
   "impact_score": <1-10>,
@@ -659,65 +661,74 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
     desc = f"**{target}** → **{acquirer}**\n\n"
 
     if analysis.get('deal_value'):
-        desc += f"💰 **Deal Value:** {analysis['deal_value']}"
+        desc += f"💰 **Wartość transakcji:** {analysis['deal_value']}"
         if analysis.get('deal_value_source') == 'regex_confirmed':
-            desc += " ✅ (regex confirmed)"
+            desc += " ✅ (potwierdzone regexem)"
         desc += "\n"
 
     if analysis.get('premium_pct') is not None:
-        desc += f"🔥 **Premium:** {analysis['premium_pct']}%"
+        desc += f"🔥 **Premia:** {analysis['premium_pct']}%"
         if analysis.get('premium_calculation'):
-            desc += f" *(metoda: {analysis['premium_calculation'][:80]})*"
+            desc += f" *(obliczenie: {analysis['premium_calculation'][:80]})*"
         desc += "\n"
 
     if analysis.get('offer_price_per_share') and yahoo_data.get('current_price'):
-        desc += f"🎯 **Offer:** ${analysis['offer_price_per_share']}/share vs ${yahoo_data['current_price']} current\n"
+        desc += f"🎯 **Oferta:** ${analysis['offer_price_per_share']}/akcję vs ${yahoo_data['current_price']} aktualny kurs\n"
 
     if analysis.get('upside_to_offer'):
-        desc += f"📈 **Upside to offer:** {analysis['upside_to_offer']}\n"
+        desc += f"📈 **Potencjał do oferty:** {analysis['upside_to_offer']}\n"
 
     squeeze = analysis.get('short_squeeze_risk', 'none')
+    SQUEEZE_PL = {'high': 'WYSOKI', 'medium': 'ŚREDNI', 'low': 'NISKI', 'none': 'BRAK'}
     if squeeze in ('high', 'medium'):
         short_pct = (yahoo_data.get('short_percent', 0) or 0) * 100
-        desc += f"⚡ **Short Squeeze Risk:** {squeeze.upper()} ({short_pct:.1f}% of float)\n"
+        desc += f"⚡ **Ryzyko short squeeze:** {SQUEEZE_PL.get(squeeze, squeeze.upper())} ({short_pct:.1f}% krótkich pozycji)\n"
 
-    desc += f"\n**AI IMPACT: {analysis.get('impact_score', 0)}/10** | **Confidence: {analysis.get('confidence', 0)}/10**\n"
-    desc += f"**Verdict:** {analysis.get('verdict', 'N/A')} | **Move:** {analysis.get('short_term_move', 'N/A')}\n"
-    desc += f"**Structure:** {analysis.get('deal_structure', 'N/A')}\n"
+    desc += f"\n**OCENA AI: {analysis.get('impact_score', 0)}/10** | **Pewność: {analysis.get('confidence', 0)}/10**\n"
+    desc += f"**Werdykt:** {analysis.get('verdict', 'N/A')} | **Szacowany ruch:** {analysis.get('short_term_move', 'N/A')}\n"
+
+    STRUCTURE_PL = {
+        'all-cash':    'Tylko gotówka',
+        'all-stock':   'Wymiana akcji',
+        'mixed':       'Mieszana (gotówka + akcje)',
+        'undisclosed': 'Nie ujawniono',
+    }
+    structure = analysis.get('deal_structure', 'N/A')
+    desc += f"**Forma płatności:** {STRUCTURE_PL.get(structure, structure)}\n"
 
     fields = []
 
     if yahoo_data and not yahoo_data.get('error'):
         yf_text = ""
         if yahoo_data.get('market_cap_formatted'):
-            yf_text += f"**MCap:** {yahoo_data['market_cap_formatted']}\n"
+            yf_text += f"**Wycena:** {yahoo_data['market_cap_formatted']}\n"
         if yahoo_data.get('current_price'):
-            yf_text += f"**Price:** ${yahoo_data['current_price']}\n"
+            yf_text += f"**Kurs:** ${yahoo_data['current_price']}\n"
         vs = yahoo_data.get('volume_spike', 1)
         if vs > 1.5:
-            yf_text += f"🔊 **Volume:** {vs:.1f}x avg\n"
+            yf_text += f"🔊 **Wolumen:** {vs:.1f}x śr.\n"
         if yahoo_data.get('week_change_pct') is not None:
             chg = yahoo_data['week_change_pct']
-            yf_text += f"{'📈' if chg > 0 else '📉'} **1W:** {chg:+.2f}%\n"
+            yf_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%\n"
         if fields or yf_text:
-            fields.append({"name": "📊 Market Data", "value": yf_text or "—", "inline": True})
+            fields.append({"name": "📊 Dane rynkowe", "value": yf_text or "—", "inline": True})
 
     if analysis.get('strategic_rationale'):
-        fields.append({"name": "🧠 Strategic Rationale", "value": analysis['strategic_rationale'][:300], "inline": False})
+        fields.append({"name": "🧠 Uzasadnienie strategiczne", "value": analysis['strategic_rationale'][:300], "inline": False})
 
     if analysis.get('key_points'):
-        fields.append({"name": "📌 Key Points", "value": "\n".join(f"• {p}" for p in analysis['key_points'][:3]), "inline": False})
+        fields.append({"name": "📌 Kluczowe punkty", "value": "\n".join(f"• {p}" for p in analysis['key_points'][:3]), "inline": False})
 
     if analysis.get('risks'):
-        fields.append({"name": "⚠️ Risks", "value": "\n".join(f"• {r}" for r in analysis['risks'][:2]), "inline": True})
+        fields.append({"name": "⚠️ Ryzyka", "value": "\n".join(f"• {r}" for r in analysis['risks'][:2]), "inline": True})
 
     if analysis.get('sympathy_plays'):
-        fields.append({"name": "🔗 Sympathy Plays", "value": "\n".join(f"• {s}" for s in analysis['sympathy_plays'][:3]), "inline": True})
+        fields.append({"name": "🔗 Powiązane spółki", "value": "\n".join(f"• {s}" for s in analysis['sympathy_plays'][:3]), "inline": True})
 
     if analysis.get('leak_detected'):
-        fields.append({"name": "🕵️ Leak Detected", "value": analysis.get('reasoning', '')[:200], "inline": False})
+        fields.append({"name": "🕵️ Wykryto przeciek", "value": analysis.get('reasoning', '')[:200], "inline": False})
 
-    fields.append({"name": "🔗 SEC Filing", "value": f"[Otwórz w EDGAR]({filing.get('link', '#')})", "inline": True})
+    fields.append({"name": "🔗 Zgłoszenie SEC", "value": f"[Otwórz w EDGAR]({filing.get('link', '#')})", "inline": True})
     fields.append({"name": "⏰ Czas (PL)", "value": _poland_time(datetime.utcnow().isoformat()), "inline": True})
 
     payload = {"embeds": [{"title": title, "description": desc, "color": color, "fields": fields}]}
