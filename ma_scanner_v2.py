@@ -431,8 +431,14 @@ def get_yahoo_data(ticker: str) -> Dict:
         info  = stock.info
         hist  = stock.history(period="1mo")
 
-        current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+        current_price = (info.get('currentPrice') or info.get('regularMarketPrice')
+                         or info.get('previousClose') or info.get('regularMarketPreviousClose'))
         market_cap    = info.get('marketCap')
+        if not market_cap:
+            shares     = info.get('sharesOutstanding')
+            prev_close = info.get('previousClose') or info.get('regularMarketPreviousClose')
+            if shares and prev_close:
+                market_cap = shares * prev_close
         avg_volume    = info.get('averageVolume', 1)
         volume_today  = info.get('volume', 0)
 
@@ -840,11 +846,6 @@ def scan_ma_deals():
             # --- Filtr płynności ---
             passes, reason = check_liquidity(yahoo_data)
             if not passes:
-                if reason == "Brak danych MCap":
-                    # Yahoo Finance tymczasowo nie ma danych (np. przed otwarciem rynku)
-                    # NIE dodajemy do processed — filing zostanie sprawdzony w kolejnym runie
-                    logger.warning(f"   ⚠ MCap niedostępne dla {ticker} — retry w następnym runie (nie dodaję do processed)")
-                    continue
                 logger.info(f"   ↳ Filtr płynności: {reason} — pomijam")
                 skipped_liquidity += 1
                 processed.add(accession)
