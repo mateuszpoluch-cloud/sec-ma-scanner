@@ -551,7 +551,7 @@ ANALYSIS RULES:
    - Offer Price Per Share = Total Deal Value / Shares Outstanding
    - NEVER compare Total Deal Value directly to Market Cap as % premium — that is mathematically wrong
    - If it's a partial acquisition (division/asset), set premium_pct to null
-3. DEAL VALUE: Use EXACT numbers from document. If regex found ${deal_value_regex:,.0f if deal_value_regex else 'N/A'} — confirm or explain discrepancy.
+3. DEAL VALUE: Use EXACT numbers from document. If regex found ${f"{deal_value_regex:,.0f}" if deal_value_regex else "N/A"} — confirm or explain discrepancy.
 4. If information is NOT in the document → write null. DO NOT invent numbers.
 5. SHORT SQUEEZE: If short_pct > 15% and deal_type = "acquisition" → note squeeze risk in reasoning.
 
