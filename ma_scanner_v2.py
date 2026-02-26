@@ -44,9 +44,7 @@ logger = logging.getLogger(__name__)
 # KONFIGURACJA
 # ============================================
 
-DISCORD_WEBHOOK_MEGA     = os.environ.get('DISCORD_WEBHOOK_MEGA', '')
-DISCORD_WEBHOOK_MAJOR    = os.environ.get('DISCORD_WEBHOOK_MAJOR', '')
-DISCORD_WEBHOOK_STANDARD = os.environ.get('DISCORD_WEBHOOK_STANDARD', '')
+DISCORD_WEBHOOK_V2 = os.environ.get('DISCORD_WEBHOOK_V2', '')  # jeden kanał dla wszystkich alertów v2
 GROQ_API_KEY             = os.environ.get('GROQ_API_KEY', '')
 GIST_TOKEN               = os.environ.get('GIST_TOKEN', '')
 GIST_ID                  = os.environ.get('GIST_ID_MA', '')
@@ -641,14 +639,15 @@ def _poland_time(utc_str: str) -> str:
 
 
 def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority: str):
-    webhook_map = {
-        "MEGA":     (DISCORD_WEBHOOK_MEGA,     15158332, "🔴🔴🔴"),
-        "MAJOR":    (DISCORD_WEBHOOK_MAJOR,    16753920, "🟠"),
-        "STANDARD": (DISCORD_WEBHOOK_STANDARD, 16776960, "🟡"),
+    color_map = {
+        "MEGA":     (15158332, "🔴🔴🔴"),
+        "MAJOR":    (16753920, "🟠"),
+        "STANDARD": (16776960, "🟡"),
     }
-    webhook_url, color, emoji = webhook_map.get(priority, (None, 0, "⚪"))
+    color, emoji = color_map.get(priority, (0, "⚪"))
+    webhook_url = DISCORD_WEBHOOK_V2
     if not webhook_url:
-        logger.warning(f"Brak webhooka dla {priority}")
+        logger.warning("Brak DISCORD_WEBHOOK_V2")
         return
 
     target   = analysis.get('target_company') or filing.get('company', 'Unknown')
