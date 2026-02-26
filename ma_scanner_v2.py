@@ -351,16 +351,24 @@ def extract_ticker_from_document(content: str) -> Optional[str]:
 
 
 def get_ticker_from_sec_api(cik: str) -> Optional[str]:
-    """Pobiera ticker ze SEC Company Tickers API po CIK (fallback)."""
+    """
+    Pobiera ticker z SEC EDGAR Submissions API (bezpośredni endpoint per CIK).
+    Dużo szybsze niż pobieranie całego company_tickers.json (~500KB).
+    """
     try:
-        cik_clean = str(int(cik))
-        r = HTTP_SESSION.get("https://www.sec.gov/files/company_tickers.json", timeout=10)
+        cik_padded = str(int(cik)).zfill(10)
+        url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+        r = HTTP_SESSION.get(url, timeout=10)
         r.raise_for_status()
-        for _, company in r.json().items():
-            if str(company.get('cik_str')) == cik_clean:
-                ticker = company.get('ticker')
-                if ticker:
-                    return ticker.upper()
+        data = r.json()
+        tickers = data.get('tickers', [])
+        if tickers:
+            logger.info(f"   ✓ SEC Submissions API: {tickers}")
+            return tickers[0].upper()
+        # Fallback: spróbuj z pola exchanges
+        exchanges = data.get('exchanges', [])
+        if exchanges:
+            logger.info(f"   ✓ SEC Submissions API (name fallback): {data.get('name', '')}")
     except Exception as e:
         logger.warning(f"   ✗ SEC ticker lookup błąd: {e}")
     return None
@@ -658,7 +666,12 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
 
     title = f"{emoji} [v2] {priority} M&A — {ticker or target}"
 
-    desc = f"**{target}** → **{acquirer}**\n\n"
+    tv_url = f"https://www.tradingview.com/symbols/{ticker}/" if ticker else None
+
+    desc = f"**{target}** → **{acquirer}**\n"
+    if tv_url:
+        desc += f"📊 **[{ticker} — wykres TradingView]({tv_url})**\n"
+    desc += "\n"
 
     if analysis.get('deal_value'):
         desc += f"💰 **Wartość transakcji:** {analysis['deal_value']}"
@@ -731,7 +744,10 @@ def send_discord_alert(filing: Dict, analysis: Dict, yahoo_data: Dict, priority:
     fields.append({"name": "🔗 Zgłoszenie SEC", "value": f"[Otwórz w EDGAR]({filing.get('link', '#')})", "inline": True})
     fields.append({"name": "⏰ Czas (PL)", "value": _poland_time(datetime.utcnow().isoformat()), "inline": True})
 
-    payload = {"embeds": [{"title": title, "description": desc, "color": color, "fields": fields}]}
+    embed = {"title": title, "description": desc, "color": color, "fields": fields}
+    if tv_url:
+        embed["url"] = tv_url  # tytuł alertu staje się klikalnym linkiem do TradingView
+    payload = {"embeds": [embed]}
 
     try:
         r = HTTP_SESSION.post(webhook_url, json=payload, timeout=10)
