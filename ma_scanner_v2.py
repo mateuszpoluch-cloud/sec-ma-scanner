@@ -840,6 +840,11 @@ def scan_ma_deals():
             # --- Filtr płynności ---
             passes, reason = check_liquidity(yahoo_data)
             if not passes:
+                if reason == "Brak danych MCap":
+                    # Yahoo Finance tymczasowo nie ma danych (np. przed otwarciem rynku)
+                    # NIE dodajemy do processed — filing zostanie sprawdzony w kolejnym runie
+                    logger.warning(f"   ⚠ MCap niedostępne dla {ticker} — retry w następnym runie (nie dodaję do processed)")
+                    continue
                 logger.info(f"   ↳ Filtr płynności: {reason} — pomijam")
                 skipped_liquidity += 1
                 processed.add(accession)
