@@ -60,35 +60,63 @@ SEC_RSS_BACKUP  = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&ty
 # FILTRY PŁYNNOŚCI
 # ============================================
 
-MIN_MARKET_CAP    = 100_000_000       # $100M
-MAX_MARKET_CAP    = 10_000_000_000    # $10B
+MIN_MARKET_CAP    = 100_000_000       # $100M (min — odfiltruj mikro-caps)
 MIN_AVG_VOLUME    = 100_000           # 100k akcji/dzień
 MIN_DOLLAR_VOLUME = 500_000           # $500k/dzień
+# MAX_MARKET_CAP usunięty — duży acquirer (>$10B) też może przejmować małe spółki
 
 # ============================================
 # M&A KEYWORD PRE-FILTER
 # ============================================
 
-MA_KEYWORDS = [
-    r'definitive\s+agreement',
+# Mocne sygnały — jeden wystarczy, żeby przepuścić filing do Groq
+MA_KEYWORDS_STRONG = [
     r'merger\s+agreement',
     r'acquisition\s+agreement',
     r'to\s+be\s+acquired',
     r'will\s+acquire',
-    r'has\s+agreed\s+to\s+acquire',
+    r'has\s+agreed\s+to\s+(?:acquire|merge)',
     r'all.cash\s+(?:offer|transaction|deal|merger)',
-    r'cash\s+consideration',
     r'tender\s+offer',
     r'going\s+private',
     r'take.private',
     r'leveraged\s+buyout',
     r'\blbo\b',
-    r'acquired\s+by',
-    r'acquisition\s+of\s+(?:all|the)',
-    r'merger\s+with',
-    r'agree(?:d|s)?\s+to\s+(?:acquire|merge|purchase)',
+    r'acquired\s+by\b',
+    r'acquisition\s+of\s+(?:all|the)\s+(?:outstanding|issued)',
+    r'merger\s+with\b',
+    r'agree(?:d|s)?\s+to\s+(?:acquire|merge)\b',
+    r'definitive\s+(?:merger|acquisition|business\s+combination)\s+agreement',
+]
+
+# Słabe sygnały — przepuszczają TYLKO gdy brak wzorców wykluczających
+MA_KEYWORDS_WEAK = [
+    r'definitive\s+agreement',
+    r'cash\s+consideration',
     r'purchase\s+(?:price|agreement)',
     r'offer\s+price',
+    r'business\s+combination',
+]
+
+# Wzorce wykluczające — jeśli dokument zawiera którykolwiek z nich, słabe keywords są ignorowane
+EXCLUSION_PATTERNS = [
+    r'revolving\s+(?:credit|loan)',
+    r'credit\s+(?:facility|agreement|line)',
+    r'term\s+loan',
+    r'line\s+of\s+credit',
+    r'credit\s+and\s+security\s+agreement',
+    r'senior\s+secured\s+(?:credit|revolving|term)',
+    r'indenture',
+    r'promissory\s+note',
+    r'employment\s+agreement',
+    r'executive\s+(?:employment|compensation|severance)',
+    r'change\s+in\s+control\s+agreement',
+    r'registration\s+rights\s+agreement',
+    r'at.the.market\s+(?:offering|program)',
+    r'equity\s+distribution\s+agreement',
+    r'underwriting\s+agreement',
+    r'loan\s+(?:agreement|amendment)',
+    r'security\s+agreement',
 ]
 
 # ============================================
@@ -327,10 +355,30 @@ def extract_item_101_section(clean_text: str, max_chars: int = 12000) -> str:
 # ============================================
 
 def has_ma_keywords(content: str) -> bool:
-    """Szybka weryfikacja M&A keywords PRZED wywołaniem Groq."""
-    for pattern in MA_KEYWORDS:
+    """
+    Szybka weryfikacja M&A keywords PRZED wywołaniem Groq.
+    Logika:
+      - mocny keyword → od razu przepuść (bez względu na exclusions)
+      - słaby keyword + brak exclusion → przepuść
+      - słaby keyword + exclusion (kredyt, zatrudnienie, itp.) → odrzuć
+    """
+    # Mocne sygnały — wystarczy jeden
+    for pattern in MA_KEYWORDS_STRONG:
         if re.search(pattern, content, re.IGNORECASE):
             return True
+
+    # Sprawdź czy dokument jest wykluczonego typu (kredyt, zatrudnienie, itp.)
+    is_excluded = any(
+        re.search(p, content, re.IGNORECASE) for p in EXCLUSION_PATTERNS
+    )
+    if is_excluded:
+        return False  # Słabe keywords w takim dokumencie = false positive
+
+    # Słabe sygnały — OK tylko bez wykluczeń
+    for pattern in MA_KEYWORDS_WEAK:
+        if re.search(pattern, content, re.IGNORECASE):
+            return True
+
     return False
 
 
@@ -492,8 +540,7 @@ def check_liquidity(yahoo_data: Dict) -> tuple:
         return False, "Brak danych MCap"
     if mcap < MIN_MARKET_CAP:
         return False, f"MCap zbyt niska: {yahoo_data['market_cap_formatted']} (min $100M)"
-    if mcap > MAX_MARKET_CAP:
-        return False, f"MCap zbyt wysoka: {yahoo_data['market_cap_formatted']} (max $10B)"
+    # Brak górnego limitu MCap — duży acquirer (>$10B) też może przejmować małe spółki
 
     avg_vol = yahoo_data.get('avg_volume', 0)
     if avg_vol < MIN_AVG_VOLUME:
@@ -575,12 +622,18 @@ ANALYSIS RULES:
    - acquirer_ticker: NYSE/NASDAQ ticker of the ACQUIRER company
    - Use only the raw symbol without exchange prefix (e.g. "BIOM" not "NASDAQ:BIOM")
    - Set null if company is private, foreign, or ticker unknown
+8. CREDIT & FINANCIAL AGREEMENTS (critical — must score LOW):
+   - Revolving credit facility, term loan, credit line, credit agreement → ALWAYS score 1-3 (LOW)
+   - Indenture, promissory note, security agreement, loan amendment → ALWAYS score 1-3 (LOW)
+   - Employment agreement, executive compensation, severance → ALWAYS score 1-3 (LOW)
+   - At-the-market equity offering, underwriting agreement, registration rights → ALWAYS score 1-3 (LOW)
+   - These are NEVER M&A transactions regardless of deal size mentioned.
 
 IMPACT SCORE (1-10):
 9-10 MEGA:   Full acquisition, all-cash, premium >40%, or short squeeze setup
 7-8 MAJOR:   Full acquisition mixed/stock, premium 20-40%, or strategic acquisition with clear synergies
-5-6 STANDARD: Partial acquisition, major partnership with financial terms, large contract
-1-4 LOW:     Commercial agreement, minor partnership, MOU without binding terms → DO NOT send alert
+5-6 STANDARD: Partial acquisition of a company, definitive merger agreement (company vs company)
+1-4 LOW:     Credit facility, loan, employment contract, commercial agreement, MOU, partnership → DO NOT send alert
 
 DOCUMENT (Item 1.01 section):
 {section}
