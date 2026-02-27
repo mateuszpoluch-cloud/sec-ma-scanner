@@ -909,25 +909,21 @@ def scan_ma_deals():
         # --- Wyciągnij sekcję Item 1.01 ---
         section = extract_item_101_section(clean_text, max_chars=12000)
 
-        # --- PRE-FILTER: M&A keywords przed wywołaniem Groq ---
-        if not has_ma_keywords(section):
-            logger.info("   ↳ Brak M&A keywords (prawdopodobnie zwykła umowa handlowa) — pomijam")
-            skipped_no_keywords += 1
-            processed.add(accession)
-            continue
-
-        logger.info("   ✓ M&A keywords znalezione — kontynuuję analizę")
+        # Keyword pre-filter usunięty — Item 1.01 w RSS jest wystarczającym filtrem.
+        # Groq (reguła #8) odrzuca kredyty/umowy finansowe jako LOW (1-3).
 
         # --- Regex: wartość dealu jako weryfikacja dla AI ---
         deal_value_regex = extract_deal_value_regex(section)
 
-        # --- Ticker lookup (priorytet: tytuł RSS > dokument > SEC API) ---
+        # --- Ticker lookup (priorytet: tytuł RSS > SEC API > dokument) ---
+        # SEC API przed dokumentem — dokument może zawierać fałszywe trafienia
+        # (np. słowo "FLAG" w treści fuzji → zły ticker zamiast NATL)
         ticker = filing.get('ticker_hint')
-        if not ticker:
-            ticker = extract_ticker_from_document(clean_text)
         if not ticker and cik:
             ticker = get_ticker_from_sec_api(cik)
             time.sleep(0.3)
+        if not ticker:
+            ticker = extract_ticker_from_document(clean_text)
 
         # --- Yahoo Finance ---
         yahoo_data = {}
