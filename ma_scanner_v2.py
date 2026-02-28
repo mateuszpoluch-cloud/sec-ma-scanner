@@ -735,6 +735,17 @@ Respond ONLY with valid JSON:
         logger.error(f"   ✗ Groq błąd: {e}")
         return None
 
+def _truncate_sentence(text: str, max_len: int = 1020) -> str:
+    """Ucina tekst na granicy ostatniego pełnego zdania w limicie max_len znaków."""
+    if len(text) <= max_len:
+        return text
+    chunk = text[:max_len]
+    # Szukaj ostatniego końca zdania (. ! ?) żeby nie ciąć w środku
+    last = max(chunk.rfind('. '), chunk.rfind('! '), chunk.rfind('? '), chunk.rfind('.\n'))
+    if last > max_len // 2:
+        return chunk[:last + 1]
+    return chunk.rstrip() + '…'
+
 # ============================================
 # DISCORD
 # ============================================
@@ -877,7 +888,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         logger.warning("   ⚠ analyst_verdict zawiera kwoty/procenty — pomijam (halucynacja finansowa)")
         analyst_verdict = ''
     if analyst_verdict:
-        fields.append({"name": "🧠 Interpretacja analityczna", "value": analyst_verdict[:1000], "inline": False})
+        fields.append({"name": "🧠 Interpretacja analityczna", "value": _truncate_sentence(analyst_verdict, 1020), "inline": False})
 
     if analysis.get('risks'):
         fields.append({"name": "⚠️ Ryzyka", "value": "\n".join(f"• {r}" for r in analysis['risks'][:2]), "inline": True})
