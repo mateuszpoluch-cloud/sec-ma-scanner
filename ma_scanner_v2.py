@@ -628,6 +628,15 @@ ANALYSIS RULES:
    - Employment agreement, executive compensation, severance → ALWAYS score 1-3 (LOW)
    - At-the-market equity offering, underwriting agreement, registration rights → ALWAYS score 1-3 (LOW)
    - These are NEVER M&A transactions regardless of deal size mentioned.
+9. FREE-FORM TEXT — ANTI-HALLUCINATION RULES (critical):
+   - alert_headline: ONE sentence max. Describe deal type and strategic significance ONLY.
+     → MUST NOT contain any numbers, dollar amounts, percentages, or share prices.
+     → Write in Polish.
+     → Example: "Brink's przejmuje NCR Atleos w transakcji gotówkowej — NATL staje się spółką prywatną"
+   - key_insight: 2-3 sentences max. Focus on: deal certainty, regulatory risk, timeline, what traders should watch.
+     → MUST NOT contain any numbers, dollar amounts, percentages, or share prices.
+     → Write in Polish.
+     → All numeric context (premium, upside, deal value) is shown separately from verified sources — do NOT repeat them here.
 
 IMPACT SCORE (1-10):
 9-10 MEGA:   Full acquisition, all-cash, premium >40%, or short squeeze setup
@@ -668,6 +677,8 @@ Respond ONLY with valid JSON:
   "filer_role": "target|acquirer|unknown",
   "target_ticker": "<ticker or null>",
   "acquirer_ticker": "<ticker or null>",
+  "alert_headline": "<1 sentence in Polish, NO numbers/prices/percentages — deal type + strategic significance>",
+  "key_insight": "<2-3 sentences in Polish, NO numbers — deal certainty, regulatory risk, timeline, what to watch>",
   "reasoning": "<full justification>"
 }}"""
 
@@ -682,7 +693,7 @@ Respond ONLY with valid JSON:
                     {"role": "user", "content": prompt}
                 ],
                 "temperature": 0.2,
-                "max_tokens": 1200
+                "max_tokens": 1500
             },
             timeout=45
         )
@@ -741,10 +752,15 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
     title = f"{emoji} [v2] {priority} M&A — {display_ticker or target_name}"
     tv_url = f"https://www.tradingview.com/symbols/{display_ticker}/" if display_ticker else None
 
-    desc = f"🎯 **Cel:** {target_name}"
+    # --- Nagłówek: AI headline (jakościowy, bez liczb) ---
+    headline = analysis.get('alert_headline', '')
+    desc = f"*{headline}*\n\n" if headline else ""
+
+    # --- Spółki + TradingView ---
+    desc += f"🎯 **Cel:** {target_name}"
     if target_ticker:
         desc += f" `({target_ticker})`"
-    desc += f"\n🏢 **Nabywca:** {acquirer_name}"
+    desc += f"　　🏢 **Nabywca:** {acquirer_name}"
     if acquirer_ticker:
         desc += f" `({acquirer_ticker})`"
     desc += "\n"
@@ -752,43 +768,45 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         desc += f"📊 **[{display_ticker} — wykres TradingView]({tv_url})**\n"
     desc += "\n"
 
+    # --- Liczby — zawsze z weryfikowanych źródeł ---
     if analysis.get('deal_value'):
-        desc += f"💰 **Wartość transakcji:** {analysis['deal_value']}"
+        desc += f"💰 **Wartość:** {analysis['deal_value']}"
         if analysis.get('deal_value_source') == 'regex_confirmed':
-            desc += " ✅ (potwierdzone regexem)"
+            desc += " ✅"
         desc += "\n"
 
-    if analysis.get('premium_pct') is not None:
-        desc += f"🔥 **Premia:** {analysis['premium_pct']}%"
-        if analysis.get('premium_calculation'):
-            desc += f" *(obliczenie: {analysis['premium_calculation'][:80]})*"
-        desc += "\n"
-
-    # Kurs targetu (ten skacze do ceny oferty)
+    # Oferta per akcję (z dokumentu przez Groq) + kurs (Yahoo)
     target_price = target_yahoo.get('current_price')
-    if analysis.get('offer_price_per_share') and target_price:
-        desc += f"🎯 **Oferta:** ${analysis['offer_price_per_share']}/akcję vs ${target_price} aktualny kurs\n"
+    offer_price  = analysis.get('offer_price_per_share')
+    if offer_price and target_price:
+        desc += f"🎯 **Oferta:** ${offer_price}/akcję  |  **Kurs:** ${target_price}\n"
 
-    if analysis.get('upside_to_offer'):
-        desc += f"📈 **Potencjał do oferty:** {analysis['upside_to_offer']}\n"
+    # Premia: Groq liczy z dokumentu (wymaga pre-announcement price)
+    if analysis.get('premium_pct') is not None:
+        desc += f"🔥 **Premia:** +{analysis['premium_pct']:.1f}%\n"
 
+    # Upside: Python liczy z Yahoo (kurs aktualny → cena oferty) — brak halucynacji
+    py_upside = analysis.get('_py_upside_pct')
+    if py_upside is not None:
+        icon = "📈" if py_upside >= 0 else "📉"
+        desc += f"{icon} **Potencjał do oferty:** {py_upside:+.1f}% *(kurs → cena oferty)*\n"
+
+    # Short squeeze
     squeeze = analysis.get('short_squeeze_risk', 'none')
     SQUEEZE_PL = {'high': 'WYSOKI', 'medium': 'ŚREDNI', 'low': 'NISKI', 'none': 'BRAK'}
     if squeeze in ('high', 'medium'):
         short_pct = (target_yahoo.get('short_percent', 0) or 0) * 100
-        desc += f"⚡ **Ryzyko short squeeze:** {SQUEEZE_PL.get(squeeze, squeeze.upper())} ({short_pct:.1f}% krótkich pozycji)\n"
+        desc += f"⚡ **Short squeeze:** {SQUEEZE_PL.get(squeeze, squeeze.upper())} ({short_pct:.1f}% flotu)\n"
 
-    desc += f"\n**OCENA AI: {analysis.get('impact_score', 0)}/10** | **Pewność: {analysis.get('confidence', 0)}/10**\n"
-    desc += f"**Werdykt:** {analysis.get('verdict', 'N/A')} | **Szacowany ruch:** {analysis.get('short_term_move', 'N/A')}\n"
-
+    # Ocena AI
     STRUCTURE_PL = {
-        'all-cash':    'Tylko gotówka',
-        'all-stock':   'Wymiana akcji',
-        'mixed':       'Mieszana (gotówka + akcje)',
+        'all-cash':    'Gotówka',
+        'all-stock':   'Akcje',
+        'mixed':       'Gotówka + akcje',
         'undisclosed': 'Nie ujawniono',
     }
-    structure = analysis.get('deal_structure', 'N/A')
-    desc += f"**Forma płatności:** {STRUCTURE_PL.get(structure, structure)}\n"
+    structure = STRUCTURE_PL.get(analysis.get('deal_structure', ''), analysis.get('deal_structure', 'N/A'))
+    desc += f"\n**{analysis.get('impact_score', 0)}/10** · **Pewność: {analysis.get('confidence', 0)}/10** · {structure}\n"
 
     fields = []
 
@@ -824,11 +842,14 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         if acq_text:
             fields.append({"name": "🏢 Dane nabywcy", "value": acq_text, "inline": True})
 
-    if analysis.get('strategic_rationale'):
-        fields.append({"name": "🧠 Uzasadnienie strategiczne", "value": analysis['strategic_rationale'][:300], "inline": False})
-
-    if analysis.get('key_points'):
-        fields.append({"name": "📌 Kluczowe punkty", "value": "\n".join(f"• {p}" for p in analysis['key_points'][:3]), "inline": False})
+    # key_insight: AI pisze co obserwować — BEZ liczb (reguła #9 w prompcie)
+    key_insight = analysis.get('key_insight', '').strip()
+    # Walidacja antyhallucynacyjna: usuń key_insight jeśli zawiera liczby/% (AI złamał regułę)
+    if key_insight and re.search(r'\d', key_insight):
+        logger.warning("   ⚠ key_insight zawiera liczby — pomijam (reguła antyhallucynacyjna)")
+        key_insight = ''
+    if key_insight:
+        fields.append({"name": "💡 Co obserwować", "value": key_insight[:400], "inline": False})
 
     if analysis.get('risks'):
         fields.append({"name": "⚠️ Ryzyka", "value": "\n".join(f"• {r}" for r in analysis['risks'][:2]), "inline": True})
@@ -996,6 +1017,22 @@ def scan_ma_deals():
         else:
             # Nie wiadomo kto jest kim — traktujemy filer jako target
             target_yahoo = yahoo_data
+
+        # --- Python-side upside calculation (nie ufamy Groqowi z matematyką) ---
+        # Upside = dystans od aktualnego kursu do ceny oferty → czyste dane Yahoo + Groq
+        offer_price  = analysis.get('offer_price_per_share')
+        target_price = target_yahoo.get('current_price')
+        if offer_price and target_price and float(target_price) > 0:
+            py_upside = round((float(offer_price) - float(target_price)) / float(target_price) * 100, 1)
+            analysis['_py_upside_pct'] = py_upside
+            logger.info(f"   ✓ Python upside: {py_upside:+.1f}% (oferta ${offer_price} vs kurs ${target_price})")
+        else:
+            analysis['_py_upside_pct'] = None
+
+        # Walidacja: jeśli Groq podał premium ale nie ma offer_price → nie ufamy premium
+        if not offer_price and analysis.get('premium_pct') is not None:
+            logger.warning("   ⚠ Groq podał premium_pct bez offer_price_per_share — ignoruję premium")
+            analysis['premium_pct'] = None
 
         # --- Routing na Discord ---
         impact = analysis.get('impact_score', 0)
