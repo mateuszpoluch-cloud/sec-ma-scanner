@@ -860,11 +860,11 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         if acq_text:
             fields.append({"name": "🏢 Dane nabywcy", "value": acq_text, "inline": True})
 
-    # key_insight: AI pisze co obserwować — BEZ liczb (reguła #9 w prompcie)
+    # key_insight: AI pisze co obserwować
+    # Guard: blokuj tylko halucynacje finansowe ($X lub X.X%) — nie blokuj lat (2026) ani kwartałów (Q3)
     key_insight = analysis.get('key_insight', '').strip()
-    # Walidacja antyhallucynacyjna: usuń key_insight jeśli zawiera liczby/% (AI złamał regułę)
-    if key_insight and re.search(r'\d', key_insight):
-        logger.warning("   ⚠ key_insight zawiera liczby — pomijam (reguła antyhallucynacyjna)")
+    if key_insight and re.search(r'\$[\d,]+|\b\d+[.,]\d+\s*%', key_insight):
+        logger.warning("   ⚠ key_insight zawiera kwoty/procenty — pomijam (halucynacja)")
         key_insight = ''
     if key_insight:
         fields.append({"name": "💡 Co obserwować", "value": key_insight[:400], "inline": False})
@@ -893,6 +893,12 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         "inline": True
     })
 
+    # Debug: pokaż które sekcje trafiły do alertu
+    field_names = [f['name'] for f in fields]
+    logger.info(f"   📨 Alert fields ({len(fields)}): {' | '.join(field_names)}")
+    if not any('target' in n.lower() or 'CEL' in n for n in field_names):
+        logger.warning(f"   ⚠ Brak sekcji target — target_yahoo={bool(target_yahoo)}, error={target_yahoo.get('error','none') if target_yahoo else 'empty'}")
+
     embed = {"title": title, "description": desc, "color": color, "fields": fields}
     if tv_url:
         embed["url"] = tv_url  # tytuł alertu staje się klikalnym linkiem do TradingView
@@ -901,7 +907,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
     try:
         r = HTTP_SESSION.post(webhook_url, json=payload, timeout=10)
         r.raise_for_status()
-        logger.info(f"✓ Discord [{priority}]: {ticker or target}")
+        logger.info(f"✓ Discord [{priority}]: {display_ticker or target_name}")
     except Exception as e:
         logger.error(f"✗ Discord błąd: {e}")
 
