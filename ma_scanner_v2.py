@@ -26,6 +26,7 @@ import re
 import time
 import logging
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
@@ -239,13 +240,23 @@ def _parse_rss_feed(url: str) -> List[Dict]:
             if m:
                 ticker_from_title = m.group(1)
 
+            # Czas publikacji → konwertuj RFC 2822 na ISO UTC żeby _poland_time mogło go obsłużyć
+            pub_raw = getattr(entry, 'published', '')
+            pub_iso = ''
+            if pub_raw:
+                try:
+                    pub_iso = parsedate_to_datetime(pub_raw).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+                except Exception:
+                    pub_iso = ''
+
             filings.append({
                 'title':            title,
                 'link':             link,
                 'cik':              cik,
                 'accession':        accession,
                 'ticker_hint':      ticker_from_title,
-                'published':        getattr(entry, 'published', ''),
+                'published':        pub_raw,
+                'published_iso':    pub_iso,
             })
 
         return filings
@@ -768,12 +779,16 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         desc += f"📊 **[{display_ticker} — wykres TradingView]({tv_url})**\n"
     desc += "\n"
 
-    # --- Liczby — zawsze z weryfikowanych źródeł ---
-    if analysis.get('deal_value'):
-        desc += f"💰 **Wartość:** {analysis['deal_value']}"
+    # --- Wartość transakcji — Groq string → fallback regex (zawsze zweryfikowany) ---
+    deal_val_str = (analysis.get('deal_value') or '').strip()
+    deal_val_regex = filing.get('_deal_value_regex')
+    if deal_val_str and deal_val_str.lower() not in ('null', 'undisclosed', 'none', ''):
+        desc += f"💰 **Wartość:** {deal_val_str}"
         if analysis.get('deal_value_source') == 'regex_confirmed':
             desc += " ✅"
         desc += "\n"
+    elif deal_val_regex:
+        desc += f"💰 **Wartość:** ${deal_val_regex:,.0f} ✅ *(regex)*\n"
 
     # Oferta per akcję (z dokumentu przez Groq) + kurs (Yahoo)
     target_price = target_yahoo.get('current_price')
@@ -782,8 +797,11 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         desc += f"🎯 **Oferta:** ${offer_price}/akcję  |  **Kurs:** ${target_price}\n"
 
     # Premia: Groq liczy z dokumentu (wymaga pre-announcement price)
-    if analysis.get('premium_pct') is not None:
-        desc += f"🔥 **Premia:** +{analysis['premium_pct']:.1f}%\n"
+    try:
+        prem = float(analysis['premium_pct'])
+        desc += f"🔥 **Premia:** +{prem:.1f}%\n"
+    except (TypeError, ValueError, KeyError):
+        pass
 
     # Upside: Python liczy z Yahoo (kurs aktualny → cena oferty) — brak halucynacji
     py_upside = analysis.get('_py_upside_pct')
@@ -860,8 +878,20 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
     if analysis.get('leak_detected'):
         fields.append({"name": "🕵️ Wykryto przeciek", "value": analysis.get('reasoning', '')[:200], "inline": False})
 
-    fields.append({"name": "🔗 Zgłoszenie SEC", "value": f"[Otwórz w EDGAR]({filing.get('link', '#')})", "inline": True})
-    fields.append({"name": "⏰ Czas (PL)", "value": _poland_time(datetime.utcnow().isoformat()), "inline": True})
+    # Czas publikacji 8-K (z RSS) — nie czas wysłania alertu
+    pub_iso = filing.get('published_iso', '')
+    pub_display = _poland_time(pub_iso) if pub_iso else _poland_time(datetime.utcnow().isoformat())
+
+    fields.append({
+        "name": "📋 Formularz",
+        "value": f"8-K · Item 1.01\n[Otwórz w EDGAR]({filing.get('link', '#')})",
+        "inline": True
+    })
+    fields.append({
+        "name": "⏰ Opublikowano (8-K)",
+        "value": pub_display,
+        "inline": True
+    })
 
     embed = {"title": title, "description": desc, "color": color, "fields": fields}
     if tv_url:
@@ -935,6 +965,7 @@ def scan_ma_deals():
 
         # --- Regex: wartość dealu jako weryfikacja dla AI ---
         deal_value_regex = extract_deal_value_regex(section)
+        filing['_deal_value_regex'] = deal_value_regex  # fallback gdy Groq zwróci null
 
         # --- Ticker lookup (priorytet: tytuł RSS > SEC API > dokument) ---
         # SEC API przed dokumentem — dokument może zawierać fałszywe trafienia
