@@ -879,15 +879,39 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
             yf_text += f"**Wycena:** {target_yahoo['market_cap_formatted']}\n"
         if target_yahoo.get('current_price'):
             yf_text += f"**Kurs:** ${target_yahoo['current_price']}\n"
+
         vs = target_yahoo.get('volume_spike', 1)
+        if vs >= 10:
+            vol_label = "ekstremalny — instytucje w pozycji"
+        elif vs >= 5:
+            vol_label = "bardzo wysoki — rynek się pozycjonuje"
+        elif vs >= 2:
+            vol_label = "podwyższony"
+        else:
+            vol_label = None
         if vs > 1.5:
-            yf_text += f"🔊 **Wolumen:** {vs:.1f}x śr.\n"
+            yf_text += f"🔊 **Wolumen:** {vs:.1f}x śr." + (f" *({vol_label})*" if vol_label else "") + "\n"
+
         if target_yahoo.get('week_change_pct') is not None:
             chg = target_yahoo['week_change_pct']
-            yf_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%\n"
+            chg_label = " *(kurs już ruszył po ogłoszeniu)*" if abs(chg) > 5 else ""
+            yf_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%{chg_label}\n"
+
         if target_yahoo.get('short_percent'):
             sp = target_yahoo['short_percent'] * 100
-            yf_text += f"🩳 **Short:** {sp:.1f}% flotu\n"
+            if sp >= 15:
+                short_label = "wysoki — squeeze przy zamknięciu"
+            elif sp >= 7:
+                short_label = "umiarkowany — shorty muszą odkupić"
+            else:
+                short_label = "niski"
+            yf_text += f"🩳 **Short:** {sp:.1f}% flotu *({short_label})*\n"
+
+        inst = (target_yahoo.get('institutional_pct') or 0) * 100
+        if inst > 0:
+            inst_label = "akceptacja prawie pewna" if inst >= 80 else "znaczący udział" if inst >= 50 else "niski udział"
+            yf_text += f"🏦 **Instytucje:** {inst:.0f}% *({inst_label})*\n"
+
         if yf_text:
             fields.append({"name": "📊 Dane targetu (CEL)", "value": yf_text, "inline": True})
 
@@ -900,7 +924,13 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
             acq_text += f"**Kurs:** ${acquirer_yahoo['current_price']}\n"
         if acquirer_yahoo.get('week_change_pct') is not None:
             chg = acquirer_yahoo['week_change_pct']
-            acq_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%\n"
+            chg_label = " *(rynek akceptuje deal)*" if chg >= 0 else " *(rynek kwestionuje cenę)*"
+            acq_text += f"{'📈' if chg > 0 else '📉'} **Tydzień:** {chg:+.2f}%{chg_label}\n"
+        t_mcap = target_yahoo.get('market_cap') if target_yahoo else None
+        a_mcap = acquirer_yahoo.get('market_cap')
+        if a_mcap and t_mcap:
+            ratio = a_mcap / t_mcap
+            acq_text += f"📐 **Nabywca/target:** {ratio:.1f}x wyceny\n"
         if acq_text:
             fields.append({"name": "🏢 Dane nabywcy", "value": acq_text, "inline": True})
 
