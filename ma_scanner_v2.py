@@ -644,7 +644,10 @@ ANALYSIS RULES:
      Example: "Brink's przejmuje NCR Atleos w transakcji gotówkowej — NATL staje się spółką prywatną"
    - analyst_verdict: Your EXPERT PREDICTION and REASONING as a senior M&A analyst. This is the most important field.
      → 5-8 sentences in Polish. NO dollar amounts, NO percentages, NO share prices (those are shown separately).
-     → You are NOT just summarizing the document — you are REASONING from your knowledge of:
+     → START with an explicit trading recommendation on the FIRST LINE:
+        "KUPUJ TARGET [ticker]" / "SPEKULATYWNIE KUPUJ TARGET [ticker]" / "OBSERWUJ — ryzyko niedomknięcia" / "UNIKAJ"
+        followed by one-line justification of the recommendation.
+     → Then REASON from your knowledge of:
         • Historical M&A patterns: how similar deals in this sector/size typically played out
         • Regulatory environment: what antitrust history says about this type of combination
         • Deal structure signals: what all-cash vs stock deals historically mean for closure probability
@@ -652,12 +655,11 @@ ANALYSIS RULES:
         • What the market is likely MISSING or OVERPRICING in this situation
         • Your probability assessment: is this deal likely to close, get bumped, or fall apart — and WHY
      → Be specific, opinionated, and confident. Do not hedge everything. Give a real take.
-     → Example quality (adapt to actual deal): "Transakcje all-cash w sektorze usług finansowych historycznie zamykają się
-        z bardzo wysokim wskaźnikiem sukcesu — szczególnie gdy nabywca jest notowany i ma silny bilans. Podobne przejęcia
-        w tym segmencie rynku spotkały się z ograniczoną interwencją regulacyjną, ponieważ koncentracja geograficzna
-        jest rozłożona. Największym ryzykiem nie są regulatorzy, lecz zmiana warunków finansowania po stronie nabywcy —
-        jednak struktura gotówkowa eliminuje ten czynnik. Rynek prawdopodobnie nie docenia pewności zamknięcia tej
-        transakcji, wyceniając spread wyżej niż historycznie uzasadnione w podobnych przypadkach."
+     → Example quality: "KUPUJ TARGET NATL — transakcja gotówkowa z silnym nabywcą, historycznie bardzo wysoka
+        pewność zamknięcia. Transakcje all-cash w sektorze usług finansowych rzadko upadają po ogłoszeniu, bo
+        nabywca traci reputację przy wycofaniu. Podobne przejęcia w segmencie logistyki gotówkowej przeszły przez
+        regulatorów z minimalnymi wymaganiami dywersytury. Rynek prawdopodobnie przecenia ryzyko antymonopolowe,
+        co tworzy atrakcyjny spread dla strategii arbitrażu fuzyjnego."
 
 IMPACT SCORE (1-10):
 9-10 MEGA:   Full acquisition, all-cash, premium >40%, or short squeeze setup
@@ -828,7 +830,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
     py_upside = analysis.get('_py_upside_pct')
     if py_upside is not None:
         icon = "📈" if py_upside >= 0 else "📉"
-        desc += f"{icon} **Potencjał do oferty:** {py_upside:+.1f}% *(kurs → cena oferty)*\n"
+        desc += f"{icon} **Potencjał do oferty:** {py_upside:+.1f}% *(kurs aktualny → cena oferty przy zamknięciu)*\n"
 
     # Short squeeze
     squeeze = analysis.get('short_squeeze_risk', 'none')
@@ -836,6 +838,27 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
     if squeeze in ('high', 'medium'):
         short_pct = (target_yahoo.get('short_percent', 0) or 0) * 100
         desc += f"⚡ **Short squeeze:** {SQUEEZE_PL.get(squeeze, squeeze.upper())} ({short_pct:.1f}% flotu)\n"
+
+    # --- Sygnał tradingowy — wynika z mechaniki dealu, nie z AI ---
+    filer_role    = analysis.get('filer_role', 'unknown')
+    is_full_acq   = analysis.get('is_full_acquisition', False)
+    deal_struct   = analysis.get('deal_structure', '')
+    desc += "\n"
+    if filer_role == 'target' and is_full_acq:
+        if deal_struct == 'all-cash':
+            desc += "🟢 **SYGNAŁ: KUPUJ TARGET** — gotówkowy buyout, kurs zmierza do stałej ceny oferty\n"
+        elif deal_struct == 'all-stock':
+            desc += "🟡 **SYGNAŁ: SPEKULATYWNIE KUPUJ TARGET** — fuzja przez akcje, wartość zależy od kursu acquirera\n"
+        elif deal_struct == 'mixed':
+            desc += "🟡 **SYGNAŁ: SPEKULATYWNIE KUPUJ TARGET** — transakcja mieszana (gotówka + akcje)\n"
+        else:
+            desc += "🟡 **SYGNAŁ: OBSERWUJ TARGET** — struktura transakcji do potwierdzenia\n"
+    elif filer_role == 'acquirer':
+        desc += "🔵 **SYGNAŁ: OBSERWUJ ACQUIRERA** — nabywca zazwyczaj traci krótkoterminowo; target skacze do oferty\n"
+    elif is_full_acq:
+        desc += "🟢 **SYGNAŁ: KUPUJ TARGET** — przejęcie całej spółki\n"
+    else:
+        desc += "⚪ **SYGNAŁ: OBSERWUJ** — częściowe przejęcie lub nieznana rola filer\n"
 
     # Ocena AI
     STRUCTURE_PL = {
@@ -845,7 +868,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         'undisclosed': 'Nie ujawniono',
     }
     structure = STRUCTURE_PL.get(analysis.get('deal_structure', ''), analysis.get('deal_structure', 'N/A'))
-    desc += f"\n**{analysis.get('impact_score', 0)}/10** · **Pewność: {analysis.get('confidence', 0)}/10** · {structure}\n"
+    desc += f"**AI: {analysis.get('impact_score', 0)}/10** · **Pewność: {analysis.get('confidence', 0)}/10** · {structure}\n"
 
     fields = []
 
