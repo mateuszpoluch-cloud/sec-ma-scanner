@@ -639,15 +639,25 @@ ANALYSIS RULES:
    - Employment agreement, executive compensation, severance → ALWAYS score 1-3 (LOW)
    - At-the-market equity offering, underwriting agreement, registration rights → ALWAYS score 1-3 (LOW)
    - These are NEVER M&A transactions regardless of deal size mentioned.
-9. FREE-FORM TEXT — ANTI-HALLUCINATION RULES (critical):
-   - alert_headline: ONE sentence max. Describe deal type and strategic significance ONLY.
-     → MUST NOT contain any numbers, dollar amounts, percentages, or share prices.
-     → Write in Polish.
-     → Example: "Brink's przejmuje NCR Atleos w transakcji gotówkowej — NATL staje się spółką prywatną"
-   - key_insight: 2-3 sentences max. Focus on: deal certainty, regulatory risk, timeline, what traders should watch.
-     → MUST NOT contain any numbers, dollar amounts, percentages, or share prices.
-     → Write in Polish.
-     → All numeric context (premium, upside, deal value) is shown separately from verified sources — do NOT repeat them here.
+9. FREE-FORM TEXT — RULES (critical):
+   - alert_headline: ONE sentence max. Deal type + strategic significance only. NO numbers/prices/percentages. Polish.
+     Example: "Brink's przejmuje NCR Atleos w transakcji gotówkowej — NATL staje się spółką prywatną"
+   - analyst_verdict: Your EXPERT PREDICTION and REASONING as a senior M&A analyst. This is the most important field.
+     → 5-8 sentences in Polish. NO dollar amounts, NO percentages, NO share prices (those are shown separately).
+     → You are NOT just summarizing the document — you are REASONING from your knowledge of:
+        • Historical M&A patterns: how similar deals in this sector/size typically played out
+        • Regulatory environment: what antitrust history says about this type of combination
+        • Deal structure signals: what all-cash vs stock deals historically mean for closure probability
+        • Market dynamics: what institutional ownership, short interest, sector trends suggest
+        • What the market is likely MISSING or OVERPRICING in this situation
+        • Your probability assessment: is this deal likely to close, get bumped, or fall apart — and WHY
+     → Be specific, opinionated, and confident. Do not hedge everything. Give a real take.
+     → Example quality (adapt to actual deal): "Transakcje all-cash w sektorze usług finansowych historycznie zamykają się
+        z bardzo wysokim wskaźnikiem sukcesu — szczególnie gdy nabywca jest notowany i ma silny bilans. Podobne przejęcia
+        w tym segmencie rynku spotkały się z ograniczoną interwencją regulacyjną, ponieważ koncentracja geograficzna
+        jest rozłożona. Największym ryzykiem nie są regulatorzy, lecz zmiana warunków finansowania po stronie nabywcy —
+        jednak struktura gotówkowa eliminuje ten czynnik. Rynek prawdopodobnie nie docenia pewności zamknięcia tej
+        transakcji, wyceniając spread wyżej niż historycznie uzasadnione w podobnych przypadkach."
 
 IMPACT SCORE (1-10):
 9-10 MEGA:   Full acquisition, all-cash, premium >40%, or short squeeze setup
@@ -689,7 +699,7 @@ Respond ONLY with valid JSON:
   "target_ticker": "<ticker or null>",
   "acquirer_ticker": "<ticker or null>",
   "alert_headline": "<1 sentence in Polish, NO numbers/prices/percentages — deal type + strategic significance>",
-  "key_insight": "<2-3 sentences in Polish, NO numbers — deal certainty, regulatory risk, timeline, what to watch>",
+  "analyst_verdict": "<5-8 sentences in Polish, NO dollar amounts/percentages/prices — expert prediction, historical patterns, regulatory outlook, probability assessment, what market is missing>",
   "reasoning": "<full justification>"
 }}"""
 
@@ -703,8 +713,8 @@ Respond ONLY with valid JSON:
                     {"role": "system", "content": "You are an expert M&A analyst. Respond ONLY with valid JSON, no extra text. Never hallucinate numbers not found in the document."},
                     {"role": "user", "content": prompt}
                 ],
-                "temperature": 0.2,
-                "max_tokens": 1500
+                "temperature": 0.3,
+                "max_tokens": 1800
             },
             timeout=45
         )
@@ -860,14 +870,14 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         if acq_text:
             fields.append({"name": "🏢 Dane nabywcy", "value": acq_text, "inline": True})
 
-    # key_insight: AI pisze co obserwować
-    # Guard: blokuj tylko halucynacje finansowe ($X lub X.X%) — nie blokuj lat (2026) ani kwartałów (Q3)
-    key_insight = analysis.get('key_insight', '').strip()
-    if key_insight and re.search(r'\$[\d,]+|\b\d+[.,]\d+\s*%', key_insight):
-        logger.warning("   ⚠ key_insight zawiera kwoty/procenty — pomijam (halucynacja)")
-        key_insight = ''
-    if key_insight:
-        fields.append({"name": "💡 Co obserwować", "value": key_insight[:400], "inline": False})
+    # analyst_verdict: ekspercka interpretacja i predykcja Groqa
+    # Guard: blokuj tylko gdy Groq wstawi kwoty ($X) lub procenty z cyframi (X.X%) — lata i kwartały OK
+    analyst_verdict = analysis.get('analyst_verdict', '').strip()
+    if analyst_verdict and re.search(r'\$[\d,]+|\b\d+[.,]\d+\s*%', analyst_verdict):
+        logger.warning("   ⚠ analyst_verdict zawiera kwoty/procenty — pomijam (halucynacja finansowa)")
+        analyst_verdict = ''
+    if analyst_verdict:
+        fields.append({"name": "🧠 Interpretacja analityczna", "value": analyst_verdict[:1000], "inline": False})
 
     if analysis.get('risks'):
         fields.append({"name": "⚠️ Ryzyka", "value": "\n".join(f"• {r}" for r in analysis['risks'][:2]), "inline": True})
