@@ -854,7 +854,11 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
         else:
             desc += "🟡 **SYGNAŁ: OBSERWUJ TARGET** — struktura transakcji do potwierdzenia\n"
     elif filer_role == 'acquirer':
-        desc += "🔵 **SYGNAŁ: OBSERWUJ ACQUIRERA** — nabywca zazwyczaj traci krótkoterminowo; target skacze do oferty\n"
+        target_is_public = bool(analysis.get('target_ticker') or (target_yahoo and target_yahoo.get('current_price')))
+        if target_is_public:
+            desc += "🔵 **SYGNAŁ: OBSERWUJ ACQUIRERA** — nabywca zazwyczaj traci krótkoterminowo; kupuj TARGET (skacze do oferty)\n"
+        else:
+            desc += "🔵 **SYGNAŁ: OBSERWUJ ACQUIRERA** — target prywatny, brak spreadu arbitrażowego; oceniaj wpływ przejęcia na CXDO\n".replace('CXDO', display_ticker or 'acquirera')
     elif is_full_acq:
         desc += "🟢 **SYGNAŁ: KUPUJ TARGET** — przejęcie całej spółki\n"
     else:
@@ -914,6 +918,13 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
 
         if yf_text:
             fields.append({"name": "📊 Dane targetu (CEL)", "value": yf_text, "inline": True})
+
+    elif analysis.get('target_company'):
+        # Target prywatny lub brak tickera — pokaż przynajmniej nazwę
+        priv_text = f"**Spółka:** {analysis['target_company']}\n🔒 Spółka prywatna — brak notowań\n"
+        if analysis.get('deal_value') and analysis['deal_value'].lower() not in ('null', 'undisclosed', 'none', ''):
+            priv_text += f"💰 Wartość przejęcia: {analysis['deal_value']}\n"
+        fields.append({"name": "📊 Dane targetu (CEL)", "value": priv_text, "inline": True})
 
     # Dane acquirera (nabywca — kontekst)
     if acquirer_yahoo and not acquirer_yahoo.get('error') and acquirer_yahoo.get('current_price'):
