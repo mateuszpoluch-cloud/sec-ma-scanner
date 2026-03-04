@@ -954,6 +954,10 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
     if analyst_verdict:
         fields.append({"name": "🧠 Interpretacja analityczna", "value": _truncate_sentence(analyst_verdict, 1020), "inline": False})
 
+    if analysis.get('key_points'):
+        kp_text = "\n".join(f"• {k}" for k in analysis['key_points'][:4])
+        fields.append({"name": "🔑 Kluczowe punkty", "value": _truncate_sentence(kp_text, 1020), "inline": False})
+
     if analysis.get('risks'):
         fields.append({"name": "⚠️ Ryzyka", "value": "\n".join(f"• {r}" for r in analysis['risks'][:2]), "inline": True})
 
@@ -1018,6 +1022,8 @@ def scan_ma_deals():
     skipped_no_keywords = 0
     skipped_liquidity = 0
     skipped_low_impact = 0
+    filings_since_save = 0
+    GIST_SAVE_INTERVAL = 15  # zapisuj Gist co 15 przetworzonych filingów
 
     for filing in filings:
         accession = filing.get('accession')
@@ -1173,6 +1179,10 @@ def scan_ma_deals():
             skipped_low_impact += 1
 
         processed.add(accession)
+        filings_since_save += 1
+        if filings_since_save >= GIST_SAVE_INTERVAL:
+            save_processed_to_gist(processed)
+            filings_since_save = 0
         time.sleep(1)
 
     save_processed_to_gist(processed)
