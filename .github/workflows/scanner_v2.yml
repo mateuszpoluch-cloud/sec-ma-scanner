@@ -14,10 +14,14 @@ on:
 
   workflow_dispatch:
 
+concurrency:
+  group: scanner-v2
+  cancel-in-progress: true
+
 jobs:
   scan_v2:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
 
     steps:
     - name: Checkout repository
