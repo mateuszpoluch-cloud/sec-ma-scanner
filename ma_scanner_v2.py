@@ -1025,6 +1025,9 @@ def scan_ma_deals():
     filings_since_save = 0
     GIST_SAVE_INTERVAL = 15  # zapisuj Gist co 15 przetworzonych filingów
 
+    consecutive_processed = 0
+    EARLY_EXIT_THRESHOLD = 15  # jeśli 15 z rzędu już przetworzone → reszta też stara → stop
+
     for filing in filings:
         accession = filing.get('accession')
         cik       = filing.get('cik')
@@ -1034,7 +1037,13 @@ def scan_ma_deals():
 
         if accession in processed:
             skipped_processed += 1
+            consecutive_processed += 1
+            if consecutive_processed >= EARLY_EXIT_THRESHOLD:
+                logger.info(f"   ⏩ {EARLY_EXIT_THRESHOLD} filingów z rzędu już przetworzone — przerywam pętlę")
+                break
             continue
+
+        consecutive_processed = 0  # reset gdy znajdziemy nowy filing
 
         logger.info(f"\n🔍 {filing.get('title', '')[:70]}")
         logger.info(f"   Accession: {accession} | CIK: {cik}")
