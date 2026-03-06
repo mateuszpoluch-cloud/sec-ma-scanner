@@ -393,24 +393,41 @@ def has_ma_keywords(content: str) -> bool:
     return False
 
 
-def check_item101_in_index(accession: str, cik: str) -> Optional[bool]:
+def get_sec_filing_metadata(cik: str, accession: str) -> Dict:
     """
-    Pre-check przez index JSON filingu (~5KB) zamiast pełnego dokumentu (~200-400KB).
-    Zwraca True = ma Item 1.01, False = nie ma, None = nie udało się sprawdzić (fallback).
+    Pobiera z SEC Submissions API w jednym zapytaniu:
+    - ticker spółki
+    - items konkretnego filingu (sprawdzenie Item 1.01 bez pobierania dokumentu)
+    Zastępuje oddzielne get_ticker_from_sec_api + sprawdzenie dokumentu.
     """
     try:
-        acc_clean = accession.replace('-', '')
-        url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{accession}-index.json"
-        r = HTTP_SESSION.get(url, timeout=5)
-        if r.status_code != 200:
-            return None
+        cik_padded = str(int(cik)).zfill(10)
+        url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+        r = HTTP_SESSION.get(url, timeout=10)
+        r.raise_for_status()
         data = r.json()
-        items_field = str(data.get('items', '') or '')
-        if not items_field:
-            return None  # brak pola → nie wiemy → fallback na pełny dokument
-        return '1.01' in items_field
-    except Exception:
-        return None  # błąd → fallback
+
+        # Ticker
+        tickers = data.get('tickers', [])
+        ticker = tickers[0].upper() if tickers else None
+
+        # Items dla konkretnego accession
+        filings_recent = data.get('filings', {}).get('recent', {})
+        acc_list   = filings_recent.get('accessionNumber', [])
+        items_list = filings_recent.get('items', [])
+        has_item_101 = None
+        items_str = ''
+        if accession in acc_list:
+            idx = acc_list.index(accession)
+            items_str = str(items_list[idx]) if idx < len(items_list) else ''
+            has_item_101 = ('1.01' in items_str) if items_str else None
+
+        logger.info(f"   ✓ SEC API: ticker={ticker} | items='{items_str}'")
+        return {'ticker': ticker, 'has_item_101': has_item_101}
+
+    except Exception as e:
+        logger.warning(f"   ✗ SEC metadata błąd: {e}")
+        return {'ticker': None, 'has_item_101': None}
 
 
 def extract_ticker_from_document(content: str) -> Optional[str]:
@@ -1068,10 +1085,19 @@ def scan_ma_deals():
         logger.info(f"\n🔍 {filing.get('title', '')[:70]}")
         logger.info(f"   Accession: {accession} | CIK: {cik}")
 
-        # --- Pre-check: czy filing ma Item 1.01? (index JSON, ~5KB zamiast 200-400KB) ---
-        has_101 = check_item101_in_index(accession, cik)
+        # --- SEC Submissions API: ticker + items w jednym zapytaniu (przed pobraniem dokumentu) ---
+        ticker = filing.get('ticker_hint')
+        has_101 = None
+        if cik:
+            meta = get_sec_filing_metadata(cik, accession)
+            time.sleep(0.3)
+            if not ticker:
+                ticker = meta.get('ticker')
+            has_101 = meta.get('has_item_101')
+
+        # Jeśli API potwierdza brak Item 1.01 — pomijamy bez pobierania dokumentu
         if has_101 is False:
-            logger.info("   ↳ Index JSON: brak Item 1.01 — pomijam (bez pobierania)")
+            logger.info("   ↳ SEC API: brak Item 1.01 — pomijam (bez pobierania dokumentu)")
             processed.add(accession)
             filings_since_save += 1
             if filings_since_save >= GIST_SAVE_INTERVAL:
@@ -1079,13 +1105,13 @@ def scan_ma_deals():
                 filings_since_save = 0
             continue
 
-        # --- Pobierz pełny dokument (tylko gdy index potwierdził Item 1.01 lub nie wiadomo) ---
+        # --- Pobierz pełny dokument (tylko gdy API potwierdził Item 1.01 lub nie wiadomo) ---
         raw_content = fetch_document_content(accession, cik)
         if not raw_content:
             processed.add(accession)
             continue
 
-        # --- Fallback check w dokumencie (gdy index JSON nie miał pola items) ---
+        # --- Fallback check w dokumencie (gdy API nie zwróciło items) ---
         if has_101 is None and not re.search(r'item\s*1\.01', raw_content, re.IGNORECASE):
             logger.info("   ↳ Brak Item 1.01 — pomijam")
             processed.add(accession)
@@ -1097,20 +1123,11 @@ def scan_ma_deals():
         # --- Wyciągnij sekcję Item 1.01 ---
         section = extract_item_101_section(clean_text, max_chars=12000)
 
-        # Keyword pre-filter usunięty — Item 1.01 w RSS jest wystarczającym filtrem.
-        # Groq (reguła #8) odrzuca kredyty/umowy finansowe jako LOW (1-3).
-
         # --- Regex: wartość dealu jako weryfikacja dla AI ---
         deal_value_regex = extract_deal_value_regex(section)
         filing['_deal_value_regex'] = deal_value_regex  # fallback gdy Groq zwróci null
 
-        # --- Ticker lookup (priorytet: tytuł RSS > SEC API > dokument) ---
-        # SEC API przed dokumentem — dokument może zawierać fałszywe trafienia
-        # (np. słowo "FLAG" w treści fuzji → zły ticker zamiast NATL)
-        ticker = filing.get('ticker_hint')
-        if not ticker and cik:
-            ticker = get_ticker_from_sec_api(cik)
-            time.sleep(0.3)
+        # Fallback ticker z dokumentu gdy SEC API i tytuł RSS nie dały rezultatu
         if not ticker:
             ticker = extract_ticker_from_document(clean_text)
 
