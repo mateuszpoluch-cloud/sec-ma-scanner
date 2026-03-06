@@ -393,6 +393,26 @@ def has_ma_keywords(content: str) -> bool:
     return False
 
 
+def check_item101_in_index(accession: str, cik: str) -> Optional[bool]:
+    """
+    Pre-check przez index JSON filingu (~5KB) zamiast pełnego dokumentu (~200-400KB).
+    Zwraca True = ma Item 1.01, False = nie ma, None = nie udało się sprawdzić (fallback).
+    """
+    try:
+        acc_clean = accession.replace('-', '')
+        url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{accession}-index.json"
+        r = HTTP_SESSION.get(url, timeout=5)
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        items_field = str(data.get('items', '') or '')
+        if not items_field:
+            return None  # brak pola → nie wiemy → fallback na pełny dokument
+        return '1.01' in items_field
+    except Exception:
+        return None  # błąd → fallback
+
+
 def extract_ticker_from_document(content: str) -> Optional[str]:
     """Wyciąga ticker z treści dokumentu (fallback gdy nie ma w tytule RSS)."""
     patterns = [
@@ -1048,14 +1068,25 @@ def scan_ma_deals():
         logger.info(f"\n🔍 {filing.get('title', '')[:70]}")
         logger.info(f"   Accession: {accession} | CIK: {cik}")
 
-        # --- Pobierz dokument ---
+        # --- Pre-check: czy filing ma Item 1.01? (index JSON, ~5KB zamiast 200-400KB) ---
+        has_101 = check_item101_in_index(accession, cik)
+        if has_101 is False:
+            logger.info("   ↳ Index JSON: brak Item 1.01 — pomijam (bez pobierania)")
+            processed.add(accession)
+            filings_since_save += 1
+            if filings_since_save >= GIST_SAVE_INTERVAL:
+                save_processed_to_gist(processed)
+                filings_since_save = 0
+            continue
+
+        # --- Pobierz pełny dokument (tylko gdy index potwierdził Item 1.01 lub nie wiadomo) ---
         raw_content = fetch_document_content(accession, cik)
         if not raw_content:
             processed.add(accession)
             continue
 
-        # --- Szybki test: czy jest Item 1.01? ---
-        if not re.search(r'item\s*1\.01', raw_content, re.IGNORECASE):
+        # --- Fallback check w dokumencie (gdy index JSON nie miał pola items) ---
+        if has_101 is None and not re.search(r'item\s*1\.01', raw_content, re.IGNORECASE):
             logger.info("   ↳ Brak Item 1.01 — pomijam")
             processed.add(accession)
             continue
