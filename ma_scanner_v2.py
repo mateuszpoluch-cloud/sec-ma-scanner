@@ -127,12 +127,18 @@ EXCLUSION_PATTERNS = [
 _retry = Retry(
     total=3,
     backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
+    status_forcelist=[500, 502, 503, 504],  # NIE 429 — Groq zwraca Retry-After: 1200s co blokuje cały job
     allowed_methods=["GET", "POST"],
+    respect_retry_after_header=False,  # ignoruj Retry-After header
 )
 HTTP_SESSION = requests.Session()
 HTTP_SESSION.mount("https://", HTTPAdapter(max_retries=_retry))
 HTTP_SESSION.headers.update({"User-Agent": USER_AGENT})
+
+# Osobna sesja dla Groq — bez retry, krótki timeout, nie czeka na rate limit
+_groq_retry = Retry(total=1, backoff_factor=0, status_forcelist=[500, 502, 503, 504])
+GROQ_SESSION = requests.Session()
+GROQ_SESSION.mount("https://", HTTPAdapter(max_retries=_groq_retry))
 
 # ============================================
 # GIST — ŚLEDZENIE PRZETWORZONYCH FILINGÓW
@@ -743,7 +749,7 @@ Respond ONLY with valid JSON:
 }}"""
 
     try:
-        r = HTTP_SESSION.post(
+        r = GROQ_SESSION.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             json={
@@ -755,8 +761,11 @@ Respond ONLY with valid JSON:
                 "temperature": 0.3,
                 "max_tokens": 1800
             },
-            timeout=45
+            timeout=30  # krótszy timeout — Groq odpowiada w <10s, 30s to dużo marginesu
         )
+        if r.status_code == 429:
+            logger.warning("   ✗ Groq rate limit (429) — pomijam ten filing")
+            return None
         r.raise_for_status()
         text = r.json()['choices'][0]['message']['content'].strip()
 
