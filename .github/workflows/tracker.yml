@@ -1,0 +1,33 @@
+name: MA Tracker — intraday snapshots
+
+on:
+  schedule:
+    # Codziennie o 22:00 UTC (1h po zamknięciu NYSE 21:00 UTC), pon–pt
+    - cron: '0 22 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install requests yfinance
+
+    - name: Run tracker
+      env:
+        GIST_TOKEN:        ${{ secrets.GIST_TOKEN }}
+        GIST_ID_MA:        ${{ secrets.GIST_ID_MA }}
+        DISCORD_WEBHOOK_V2: ${{ secrets.DISCORD_WEBHOOK_V2 }}
+      run: |
+        python tracker.py

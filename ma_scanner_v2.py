@@ -50,7 +50,8 @@ GROQ_API_KEY             = os.environ.get('GROQ_API_KEY', '')
 GIST_TOKEN               = os.environ.get('GIST_TOKEN', '')
 GIST_ID                  = os.environ.get('GIST_ID_MA', '')
 
-GIST_FILE_NAME = 'processed_ma_v2.json'  # osobny plik — nie nadpisuje v1
+GIST_FILE_NAME    = 'processed_ma_v2.json'  # osobny plik — nie nadpisuje v1
+GIST_HISTORY_FILE = 'ma_history.json'       # historia alertów do tracker.py
 
 USER_AGENT = "SEC-MA-Scanner/2.0 (research@example.com)"
 
@@ -188,6 +189,141 @@ def save_processed_to_gist(processed: set):
         logger.info(f"✓ Saved {len(processed)} filings to Gist [{GIST_FILE_NAME}]")
     except Exception as e:
         logger.error(f"Error saving Gist: {e}")
+
+# ============================================
+# GIST — HISTORIA ALERTÓW (intraday tracker)
+# ============================================
+
+def load_history_from_gist() -> List[Dict]:
+    if not GIST_TOKEN or not GIST_ID:
+        return []
+    try:
+        headers = {'Authorization': f'token {GIST_TOKEN}', 'Accept': 'application/vnd.github.v3+json'}
+        r = HTTP_SESSION.get(f'https://api.github.com/gists/{GIST_ID}', headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if 'files' in data and GIST_HISTORY_FILE in data['files']:
+            return json.loads(data['files'][GIST_HISTORY_FILE]['content'])
+        return []
+    except Exception as e:
+        logger.error(f"Error loading history Gist: {e}")
+        return []
+
+
+def save_history_to_gist(history: List[Dict]):
+    if not GIST_TOKEN or not GIST_ID:
+        return
+    try:
+        headers = {'Authorization': f'token {GIST_TOKEN}', 'Accept': 'application/vnd.github.v3+json'}
+        payload = {'files': {GIST_HISTORY_FILE: {'content': json.dumps(history, indent=2)}}}
+        r = HTTP_SESSION.patch(f'https://api.github.com/gists/{GIST_ID}', headers=headers, json=payload, timeout=10)
+        r.raise_for_status()
+        logger.info(f"✓ Historia zapisana: {len(history)} rekordów [{GIST_HISTORY_FILE}]")
+    except Exception as e:
+        logger.error(f"Error saving history Gist: {e}")
+
+
+def _filing_context(pub_iso: str) -> str:
+    """Określa kontekst czasowy filingu względem otwarcia rynku NYSE (14:30 UTC)."""
+    try:
+        dt = datetime.strptime(pub_iso[:19], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc)
+        h = dt.hour + dt.minute / 60
+        wd = dt.weekday()
+        if wd >= 5:
+            return 'weekend'
+        if h < 14.5:
+            return 'pre-market'
+        if h < 21.0:
+            return 'market-hours'
+        return 'after-hours'
+    except Exception:
+        return 'unknown'
+
+
+def build_history_record(filing: Dict, analysis: Dict, target_yahoo: Dict,
+                         acquirer_yahoo: Dict, priority: str) -> Optional[Dict]:
+    """Buduje rekord historii w chwili wysłania alertu. Snapshoty intraday uzupełnia tracker.py."""
+    display_ticker = (target_yahoo.get('ticker')
+                      or analysis.get('target_ticker')
+                      or acquirer_yahoo.get('ticker')
+                      or analysis.get('acquirer_ticker'))
+    if not display_ticker:
+        return None  # bez tickera nie ma co śledzić
+
+    pub_iso = filing.get('published_iso', '')
+    now_iso = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+
+    # Sygnał tradingowy (ta sama logika co w send_discord_alert)
+    filer_role  = analysis.get('filer_role', 'unknown')
+    is_full_acq = analysis.get('is_full_acquisition', False)
+    deal_struct = analysis.get('deal_structure', '')
+    if filer_role == 'target' and is_full_acq:
+        signal = 'KUPUJ_TARGET'
+        direction = 'bullish'
+    elif filer_role == 'acquirer':
+        signal = 'OBSERWUJ_ACQUIRERA'
+        direction = 'neutral'
+    else:
+        signal = 'OBSERWUJ'
+        direction = 'neutral'
+
+    return {
+        'id': f"{display_ticker}-{pub_iso[:10]}",
+        'ticker': display_ticker,
+        'filing_timestamp': pub_iso,
+        'alert_timestamp': now_iso,
+        'filing_context': _filing_context(pub_iso),
+        'priority': priority,
+
+        # Sygnał
+        'signal': signal,
+        'direction': direction,
+        'filer_role': filer_role,
+        'deal_type': analysis.get('deal_type'),
+        'deal_structure': deal_struct,
+        'is_full_acquisition': is_full_acq,
+
+        # Ceny w chwili alertu
+        'price_at_filing': target_yahoo.get('current_price'),
+        'offer_price': analysis.get('offer_price_per_share'),
+        'premium_pct': analysis.get('premium_pct'),
+        'deal_value_usd': analysis.get('deal_value_usd'),
+        'upside_pct': analysis.get('_py_upside_pct'),
+
+        # Kontekst rynkowy
+        'market_cap': target_yahoo.get('market_cap'),
+        'volume_spike': target_yahoo.get('volume_spike'),
+        'short_pct': target_yahoo.get('short_percent'),
+        'institutional_pct': target_yahoo.get('institutional_pct'),
+        'acquirer': analysis.get('acquirer'),
+        'acquirer_ticker': acquirer_yahoo.get('ticker') or analysis.get('acquirer_ticker'),
+
+        # Ocena AI
+        'groq_score': analysis.get('impact_score'),
+        'groq_confidence': analysis.get('confidence'),
+        'short_squeeze_risk': analysis.get('short_squeeze_risk'),
+
+        # Snapshoty intraday — uzupełnia tracker.py
+        'price_at_open': None,
+        'gap_at_open_pct': None,
+        'intraday': {
+            't_15m': None, 't_30m': None,
+            't_1h': None,  't_2h': None, 't_4h': None,
+        },
+        'trade_result': {
+            'target_hit': None,
+            'target_pct': 1.0,
+            'hit_at': None,
+            'hit_at_minutes': None,
+            'max_move_pct': None,
+            'max_drawdown_pct': None,
+        },
+        'accuracy': {
+            'direction_correct': None,
+            'target_reached': None,
+        },
+        'tracker_status': 'pending',  # pending → tracked → done
+    }
 
 # ============================================
 # RSS — POBIERANIE FILINGÓW
@@ -1228,21 +1364,32 @@ def scan_ma_deals():
             logger.warning("   ⚠ Groq podał premium_pct bez offer_price_per_share — ignoruję premium")
             analysis['premium_pct'] = None
 
-        # --- Routing na Discord ---
+        # --- Routing na Discord + zapis historii ---
         impact = analysis.get('impact_score', 0)
+        priority = None
 
         if impact >= 9:
-            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, "MEGA")
-            new_alerts += 1
+            priority = "MEGA"
         elif impact >= 7:
-            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, "MAJOR")
-            new_alerts += 1
+            priority = "MAJOR"
         elif impact >= 5:
-            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, "STANDARD")
-            new_alerts += 1
+            priority = "STANDARD"
         else:
             logger.info(f"   ↳ Low impact ({impact}/10) — pomijam alert")
             skipped_low_impact += 1
+
+        if priority:
+            send_discord_alert(filing, analysis, target_yahoo, acquirer_yahoo, priority)
+            new_alerts += 1
+            # Zapisz rekord do historii (snapshoty uzupełni tracker.py)
+            record = build_history_record(filing, analysis, target_yahoo, acquirer_yahoo, priority)
+            if record:
+                history = load_history_from_gist()
+                # Nie duplikuj — usuń stary rekord z tym samym id jeśli istnieje
+                history = [h for h in history if h.get('id') != record['id']]
+                history.append(record)
+                save_history_to_gist(history)
+                logger.info(f"   ✓ Historia: zapisano rekord {record['id']}")
 
         processed.add(accession)
         filings_since_save += 1
