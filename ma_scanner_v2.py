@@ -1151,7 +1151,7 @@ def send_discord_alert(filing: Dict, analysis: Dict, target_yahoo: Dict, acquire
 
     # Czas publikacji 8-K (z RSS) — nie czas wysłania alertu
     pub_iso = filing.get('published_iso', '')
-    pub_display = _poland_time(pub_iso) if pub_iso else _poland_time(datetime.utcnow().isoformat())
+    pub_display = _poland_time(pub_iso) if pub_iso else _poland_time(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S'))
 
     fields.append({
         "name": "📋 Formularz",
